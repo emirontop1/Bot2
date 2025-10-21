@@ -1,30 +1,89 @@
 // bot.js
 
 const TelegramBot = require('node-telegram-bot-api');
-const luamin = require('luamin');
-const axios = require('axios'); // Dosya indirmek için
-const path = require('path');   // Dosya yolu işlemleri için
+const axios = require('axios');
+const Jimp = require('jimp');
+const faceapi = require('face-api.js');
+const tf = require('@tensorflow/tfjs-node'); // face-api.js'i Node.js ortamında çalıştırmak için gerekli
+const path = require('path');
+const { Buffer } = require('buffer');
 
-// Ortam değişkenini (Environment Variable) veya doğrudan token'ı kullanın
+// Bot Token'ınızı veya Ortam Değişkeninizi kullanın
 const token = '8350124542:AAHwsh0LksJAZOW-hHTY1BTu5i8-XKGFn18'; 
 
-const bot = new TelegramBot(token, {polling: true});
+const bot = new TelegramBot(token, { polling: true });
+console.log('Face-API.js Yüz Sansürleme Botu başlatılıyor...');
 
-console.log('Bot başlatıldı ve dosya işleme özelliğine sahip...');
-
-// Telegram API dosya indirme URL'sinin temel kısmı
 const FILE_BASE_URL = `https://api.telegram.org/file/bot${token}/`;
 
+// Modelleri belleğe yükle
+async function loadModels() {
+    console.log("Face-API modelleri yükleniyor...");
+    // Sadece yüz tespiti için gerekli olan SSD Mobilenet V1 modelini yüklüyoruz.
+    await faceapi.nets.ssdMobilenetv1.loadFromDisk('./node_modules/face-api.js/model'); 
+    console.log("Modeller başarıyla yüklendi.");
+}
+
+// Global olarak modellerin yüklenmesini bekle
+loadModels().catch(err => {
+    console.error("Modeller yüklenirken kritik hata:", err);
+    process.exit(1);
+});
+
 /**
- * Lua kodunu gizlemek (küçültmek) için ana işlev.
+ * Görseldeki yüzleri tespit eder ve sansürler.
+ * @param {Buffer} imageBuffer - Görselin Buffer verisi
+ * @returns {Buffer | null} Sansürlenmiş görselin Buffer verisi veya null
  */
-function obfuscateLuaCode(luaCode) {
+async function censorFaces(imageBuffer) {
     try {
-        const minifiedCode = luamin.minify(luaCode);
-        return minifiedCode;
+        // 1. Jimp ile görseli yükle
+        const jimpImage = await Jimp.read(imageBuffer);
+        
+        // 2. Jimp görselini face-api.js'in işleyebileceği Tensör'e dönüştür
+        const tensor = tf.node.tensor3d(
+            Uint8Array.from(jimpImage.bitmap.data), 
+            [jimpImage.bitmap.height, jimpImage.bitmap.width, 4], 
+            'int32'
+        ).slice([0, 0, 0], [-1, -1, 3]); // RGBA'dan RGB'ye kes
+
+        // 3. Yüzleri tespit et
+        const detections = await faceapi.detectAllFaces(
+            tensor, 
+            new faceapi.SsdMobilenetv1Options()
+        );
+        
+        // Bellek yönetimi: Tensör'ü serbest bırak
+        tf.dispose(tensor); 
+
+        if (detections.length === 0) {
+            return null; // Yüz bulunamadı
+        }
+
+        // 4. Tespit edilen yüzler üzerine siyah kare çiz
+        detections.forEach(detection => {
+            const box = detection.box;
+            
+            // Sansürleme Alanı (siyah kare)
+            jimpImage.scan(
+                box.x, box.y, // Başlangıç X, Y
+                box.width, box.height, // Genişlik, Yükseklik
+                function (x, y, idx) {
+                    this.bitmap.data[idx + 0] = 0; // Kırmızı (R)
+                    this.bitmap.data[idx + 1] = 0; // Yeşil (G)
+                    this.bitmap.data[idx + 2] = 0; // Mavi (B)
+                    // Opaklık (A) değiştirilmez
+                }
+            );
+        });
+
+        // 5. İşlenmiş görseli tekrar Buffer'a dönüştür
+        const censoredBuffer = await jimpImage.getBufferAsync(Jimp.MIME_JPEG);
+        return censoredBuffer;
+
     } catch (error) {
-        console.error('Lua kodunu gizlerken hata oluştu:', error.message);
-        return null; // Başarısızlık durumunda null döndür
+        console.error('Yüz tespiti veya sansürleme sırasında hata:', error);
+        return null;
     }
 }
 
@@ -37,71 +96,52 @@ bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     bot.sendMessage(
         chatId, 
-        "Merhaba! Ben Lua Kod Gizleme Botuyum. Bana gizlemek istediğiniz **Lua kod dosyasını (.lua)** gönderin. İçeriği gizleyip geri yollayacağım."
+        "Merhaba! Node.js ve yapay zeka ile çalışan yüz sansürleme botuyum. Bana bir **fotoğraf** gönderin, üzerindeki tüm yüzleri otomatik olarak sansürleyip geri göndereyim. 😈"
     );
 });
 
-// Dosya İşleyici
-bot.on('document', async (msg) => {
+// Fotoğraf İşleyici
+bot.on('photo', async (msg) => {
     const chatId = msg.chat.id;
-    const document = msg.document;
-
-    // Sadece .lua uzantılı dosyaları kabul et
-    const fileExtension = path.extname(document.file_name).toLowerCase();
-
-    if (fileExtension !== '.lua') {
-        bot.sendMessage(chatId, `Üzgünüm, sadece Lua dosyalarını (*.lua) işleyebilirim.`);
-        return;
-    }
+    const photoArray = msg.photo;
+    
+    // En yüksek çözünürlüklü fotoğrafı al
+    const photo = photoArray[photoArray.length - 1]; 
 
     try {
-        // 1. Telegram'dan dosya bilgisini al (file_path'i öğrenmek için)
-        const file = await bot.getFile(document.file_id);
+        await bot.sendMessage(chatId, "Fotoğraf alınıyor ve yüzler tespit ediliyor...");
+        
+        // 1. Telegram'dan dosya bilgisini al
+        const file = await bot.getFile(photo.file_id);
         const fileUrl = FILE_BASE_URL + file.file_path;
 
-        // 2. Dosya içeriğini indir
-        const response = await axios.get(fileUrl, { responseType: 'text' });
-        const luaCode = response.data;
+        // 2. Görsel içeriğini indir (Buffer olarak)
+        const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+        const imageBuffer = Buffer.from(response.data);
 
-        console.log(`[${chatId}] '${document.file_name}' dosyası alındı ve indirildi.`);
+        // 3. Yüzleri sansürle
+        const censoredBuffer = await censorFaces(imageBuffer);
 
-        // 3. Kodu gizle (minify et)
-        const obfuscatedCode = obfuscateLuaCode(luaCode);
-
-        if (!obfuscatedCode) {
-            bot.sendMessage(chatId, `HATA: ${document.file_name} dosyası geçerli bir Lua kodu değil veya gizleme sırasında hata oluştu.`);
-            return;
+        if (censoredBuffer) {
+            // 4. Sansürlenmiş fotoğrafı geri gönder
+            await bot.sendPhoto(
+                chatId,
+                censoredBuffer,
+                { caption: "İşte sansürlenmiş fotoğrafınız! Tüm yüzler kapatıldı. 🤐" }
+            );
+        } else {
+            await bot.sendMessage(chatId, "Fotoğrafta yüz tespit edilemedi veya bir hata oluştu. Lütfen daha net bir görsel deneyin.");
         }
 
-        // 4. Yeni dosya adı oluştur
-        const originalName = path.basename(document.file_name, '.lua');
-        const newFileName = `${originalName}_minified.lua`;
-
-        // 5. Gizlenmiş içeriği dosya olarak geri yükle
-        // Buffer'ı doğrudan Telegram'a göndermek en temiz yoldur
-        const buffer = Buffer.from(obfuscatedCode, 'utf8');
-
-        await bot.sendDocument(
-            chatId,
-            buffer,
-            {}, // Opsiyonlar (boş bırakılabilir)
-            {
-                filename: newFileName,
-                contentType: 'text/plain'
-            }
-        );
-
-        console.log(`[${chatId}] '${newFileName}' dosyası başarıyla geri gönderildi.`);
-
     } catch (error) {
-        console.error('Dosya işleme sırasında genel hata:', error.message);
-        bot.sendMessage(chatId, `Dosyanızı işlerken beklenmedik bir hata oluştu. Lütfen daha sonra tekrar deneyin.`);
+        console.error('Görsel işleme sırasında genel hata:', error.message);
+        bot.sendMessage(chatId, `Görselinizi işlerken beklenmedik bir hata oluştu: ${error.message}`);
     }
 });
 
-// Komut dışı metinler
+// Diğer mesajlar için bilgilendirme
 bot.on('message', (msg) => {
-    if (msg.text && !msg.text.startsWith('/') && !msg.document) {
-        bot.sendMessage(msg.chat.id, 'Lütfen doğrudan bir Lua dosyası gönderin.');
+    if (msg.text && !msg.text.startsWith('/') && !msg.photo) {
+        bot.sendMessage(msg.chat.id, 'Lütfen doğrudan bir **fotoğraf** gönderin. Sansürleme işlemi için metin komutları gerekmez.');
     }
 });
