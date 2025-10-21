@@ -1,14 +1,16 @@
 {
-  "name": "lua-telegram-obfuscator",
+  "name": "face-censor-bot",
   "version": "1.0.0",
-  "description": "Node.js Telegram bot for Lua code minification using luamin.",
+  "description": "Node.js Telegram bot for face detection and censoring.",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"  
+    "start": "node bot.js"
   },
   "dependencies": {
-    "node-telegram-bot-api": "^0.61.0", 
-    "luamin": "^1.0.4"
-    "axios": "^1.6.0"
+    "node-telegram-bot-api": "^0.61.0",
+    "axios": "^1.6.0",
+    "jimp": "^0.22.28",         // Görsel işleme için
+    "face-api.js": "^0.22.2",    // Yüz tespiti için
+    "@tensorflow/tfjs-node": "^4.17.0" // face-api.js'in temel bağımlılığı
   }
 }
