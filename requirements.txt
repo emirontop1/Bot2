@@ -1,2 +1,0 @@
-python-telegram-bot
-luaparser # Lua kodunu okumak ve değiştirmek için
