@@ -1,144 +1,189 @@
+import os
 import logging
-import io
-from telegram import Update, File, Document
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import luamin # Lua kodunu minify/obfuscate etmek için bu kütüphaneyi kullanacağız
+import random
+import string
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-# --- DİKKAT: GÜVENLİK RİSKİ! ---
-# Token'ı buraya yapıştıracaksınız.
-# Bu kodun olduğu GitHub reposu KESİNLİKLE "Private" (Gizli) olmalıdır.
-# Aksi halde botunuz saniyeler içinde çalınır.
+# ==============================================================================
+# LUA PARSER VE GİZLEME (OBFUSCATION) İŞLEVLERİ
+# luamin yerine luaparser kullanılarak istenen mantık uygulanır.
+# ==============================================================================
+
+try:
+    from luaparser import ast
+    from luaparser.ast import Name, LocalAssign, LocalFunction, Chunk, Block
+    from luaparser.ast.visitor import ASTRecursiveVisitor
+    from luaparser.codegen import to_lua
+except ImportError:
+    # Eğer luaparser kurulu değilse veya import edilemezse
+    print("HATA: 'luaparser' kütüphanesi bulunamadı. Lütfen 'pip install luaparser' komutunu çalıştırın.")
+    exit(1)
+
+# Ayarlar
 TOKEN = "8350124542:AAHwsh0LksJAZOW-hHTY1BTu5i8-XKGFn18"
 
-# Logging (Hata takibi) ayarları
+# Logging ayarları
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/start komutu verildiğinde çalışır."""
+
+def generate_random_name(length=8):
+    """Rastgele okunaksız değişken adı üretir."""
+    # Başlangıç karakteri harf olmalı (Lua gereksinimi)
+    chars = string.ascii_letters + string.digits
+    return random.choice(string.ascii_letters) + ''.join(random.choice(chars) for _ in range(length - 1))
+
+def obfuscate_lua_code(lua_code: str) -> str:
+    """
+    Lua kodunu gizler:
+    1. Yerel değişken adlarını değiştirir (randomize).
+    2. Tüm yerel atamaları (LocalAssign) dosyanın en üstüne taşır.
+    """
+    try:
+        # Kodu Çözümleme (Parse)
+        tree = ast.parse(lua_code)
+    except Exception as e:
+        logger.error(f"Lua kodunu çözerken hata oluştu: {e}")
+        return "HATA: Geçersiz Lua Kodu. Çözümleme başarısız."
+
+    name_map = {}
+    local_assignments = []
+    
+    # AST üzerinde gezinen ve yerel değişkenleri toplayan/değiştiren ziyaretçi
+    class ObfuscatorVisitor(ASTRecursiveVisitor):
+        
+        def visit_LocalAssign(self, node):
+            # Yerel atamaları listeye ekle (daha sonra başa taşınacak)
+            local_assignments.append(node)
+            
+            # Atama hedeflerini (targets) gizle
+            for target in node.targets:
+                if isinstance(target, Name):
+                    old_name = target.id
+                    if old_name not in name_map:
+                        name_map[old_name] = generate_random_name()
+                    
+                    # AST'deki ismi yeni isimle değiştir
+                    target.id = name_map[old_name]
+
+            # Atamanın sağ tarafındaki değerleri ziyaret etmeye devam et
+            super().visit_LocalAssign(node)
+        
+        def visit_Name(self, node):
+            # Normal isimleri (kullanımları) haritada varsa değiştir
+            if node.id in name_map:
+                node.id = name_map[node.id]
+            super().visit_Name(node)
+            
+        def visit_LocalFunction(self, node):
+            # Yerel fonksiyon isimlerini değiştir
+            old_name = node.name.id
+            if old_name not in name_map:
+                name_map[old_name] = generate_random_name()
+            node.name.id = name_map[old_name]
+            
+            # Fonksiyon gövdesini ziyaret etmeye devam et
+            super().visit_LocalFunction(node)
+
+    # Gizleme işlemini başlat
+    visitor = ObfuscatorVisitor()
+    visitor.visit(tree)
+
+    # 1. Yerel atamaları ana gövdeden çıkar
+    new_body = []
+    # Yerel atamaların bir kopyasını alıp orijinal gövdeden çıkarıyoruz
+    local_assignment_nodes = set(local_assignments)
+
+    # Ana gövde düğümlerini filtrele
+    for node in tree.body.body:
+        if node not in local_assignment_nodes:
+            new_body.append(node)
+            
+    # 2. Gizlenmiş yerel atamaları en üste taşı
+    final_body = local_assignments + new_body
+    
+    # 3. Yeni AST'yi oluştur
+    new_tree = Chunk(Block(final_body))
+
+    # 4. AST'yi tekrar koda dönüştür
+    obfuscated_code = to_lua(new_tree)
+    
+    # luaparser, 'local' kelimesini atamaları taşırken silmiş olabilir, 
+    # ancak ObfuscatorVisitor'da LocalAssign düğümünü koruduğumuz için 
+    # to_lua'nın bunu doğru üretmesi beklenir.
+
+    return obfuscated_code
+
+# ==============================================================================
+# TELEGRAM BOT İŞLEVLERİ
+# ==============================================================================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Bot başladığında /start komutunu işler."""
     await update.message.reply_text(
-        'Merhaba! Ben bir Lua Obfuscator Botuyum.\n'
-        'Bana bir .lua dosyası gönderin veya Lua kodunuzu metin olarak yapıştırın.\n'
-        'Kodunuzu `luamin` ile küçültüp (minify) size geri göndereceğim.'
+        "Merhaba! Ben Lua Kod Gizleme Botuyum. Bana gizlemek istediğiniz Lua kodunu `/obfuscate [KOD]` formatında gönderin."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/help komutu verildiğinde çalışır."""
+    """/help komutunu işler."""
     await update.message.reply_text(
-        'Bana bir .lua dosyası veya düz metin olarak Lua kodu gönderin. '
-        'Kod, okunması zor olacak şekilde küçültülecektir (minified). '
-        'Bu, değişken adlarını şifrelemez ancak boşlukları ve yorumları kaldırır.'
+        "Kullanım:\n\n"
+        "`/obfuscate [Lua Kodu]` - Girdiğiniz Lua kodunu gizler (değişken adlarını değiştirir, local atamaları başa taşır).\n"
+        "`/start` - Bot hakkında bilgi.\n"
+        "`/help` - Bu yardım mesajı."
     )
 
-def obfuscate_lua_code(code_string: str) -> str:
-    """
-    Verilen Lua kodunu luamin kullanarak minify eder (küçültür).
-    Bu, tam bir şifreleme değil, kod küçültme ve basitleştirilmiş bir obfuscation işlemidir.
-    """
-    try:
-        # luamin.minify fonksiyonunu çağır
-        obfuscated_code = luamin.minify(code_string)
-        return obfuscated_code
-    except Exception as e:
-        logger.error(f"luamin hatası: {e}")
-        # Hata olursa, kullanıcıya hatayı bildir
-        return f"-- HATA: Kodunuz işlenemedi.\n-- Python Hatası: {e}\n\n-- Orijinal Kod:\n{code_string}"
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Metin olarak gönderilen kodları işler."""
-    user_code = update.message.text
-    logger.info("Metin olarak Lua kodu alındı.")
-    
-    await update.message.reply_text("Kodunuz işleniyor, lütfen bekleyin...")
-
-    # Kodu obfuscate et
-    obfuscated_code = obfuscate_lua_code(user_code)
-
-    # Obfuscate edilmiş kodu bir dosya olarak gönder
-    # Telegram'ın 4096 karakter sınırına takılmamak için dosya olarak göndermek en iyisidir.
-    try:
-        output_file = io.BytesIO(obfuscated_code.encode('utf-8'))
-        output_file.name = 'obfuscated.lua'
-        
-        await update.message.reply_document(
-            document=output_file,
-            filename='obfuscated.lua',
-            caption='Lua kodunuz `luamin` ile küçültüldü.'
+async def obfuscate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/obfuscate komutunu işler ve gizleme işlevini kullanır."""
+    if not context.args:
+        await update.message.reply_text(
+            "Lütfen gizlemek istediğiniz Lua kodunu komutun arkasına yazın.\nÖrnek: `/obfuscate local x = 1; print(x)`"
         )
-    except Exception as e:
-        logger.error(f"Dosya gönderme hatası: {e}")
-        await update.message.reply_text(f"Kod işlendi ancak dosya gönderilirken bir hata oluştu: {e}")
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Dosya olarak gönderilen kodları işler."""
-    document = update.message.document
-    
-    # Sadece .lua dosyalarını kabul et
-    if not document.file_name or not document.file_name.lower().endswith('.lua'):
-        await update.message.reply_text("Lütfen sadece `.lua` uzantılı bir dosya gönderin.")
         return
 
-    logger.info(f"Dosya alındı: {document.file_name}")
-    await update.message.reply_text("Dosyanız indiriliyor ve işleniyor...")
+    # Tüm argümanları birleştirerek Lua kodunu al
+    lua_code_to_obfuscate = " ".join(context.args)
 
-    try:
-        # Dosyayı indir
-        file: File = await document.get_file()
-        
-        # Dosyayı hafızaya indir (diske yazmaya gerek yok)
-        downloaded_file = io.BytesIO()
-        await file.download_to_memory(downloaded_file)
-        downloaded_file.seek(0) # Dosyanın başına dön
-        
-        # İçeriği oku
-        user_code = downloaded_file.read().decode('utf-8')
-        
-        # Kodu obfuscate et
-        obfuscated_code = obfuscate_lua_code(user_code)
-        
-        # Obfuscate edilmiş kodu yeni bir dosya olarak hazırla
-        output_file = io.BytesIO(obfuscated_code.encode('utf-8'))
-        output_file.name = f'obfuscated_{document.file_name}'
+    logger.info(f"Gizlenecek kod alındı: {lua_code_to_obfuscate[:50]}...")
+    
+    # Gizleme işlemini gerçekleştir
+    obfuscated_code = obfuscate_lua_code(lua_code_to_obfuscate)
 
-        # Yeni dosyayı kullanıcıya gönder
-        await update.message.reply_document(
-            document=output_file,
-            filename=f'obfuscated_{document.file_name}',
-            caption='Lua dosyanız `luamin` ile küçültüldü.'
+    if obfuscated_code.startswith("HATA:"):
+        await update.message.reply_text(f"Gizleme başarısız: {obfuscated_code}")
+    else:
+        # Kodun okunabilirliğini artırmak için Markdown ile gönder
+        await update.message.reply_text(
+            f"**Gizlenmiş Lua Kodu:**\n```lua\n{obfuscated_code}\n```",
+            parse_mode='Markdown'
         )
 
-    except Exception as e:
-        logger.error(f"Dosya işleme hatası: {e}")
-        await update.message.reply_text(f"Dosyanızı işlerken bir hata oluştu: {e}")
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Bilinen komutlar dışındaki mesajları yanıtlar."""
+    await update.message.reply_text(f"Üzgünüm, '{update.message.text}' komutunu anlamadım.")
+
 
 def main() -> None:
-    """Botu başlatır."""
-    
-    # Token'ın değiştirilip değiştirilmediğini kontrol et
-    if TOKEN == "BURAYA_BOTFATHER_DAN_ALDIGINIZ_TOKENI_YAPISTIRIN":
-        logger.critical("HATA: TOKEN ayarlanmamış!")
-        logger.critical("Lütfen bot.py dosyasındaki TOKEN değişkenini kendi bot token'ınızla değiştirin.")
-        return
-
-    # Application'ı kur
+    """Botu başlatır ve Telegram işleyicilerini (handlers) ayarlar."""
+    # Application oluşturma
     application = Application.builder().token(TOKEN).build()
 
-    # Komutları ekle
-    application.add_handler(CommandHandler("start", start))
+    # Komut işleyicilerini (handlers) ekleme
+    application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("obfuscate", obfuscate_command))
+    
+    # Bilinmeyen komutlar için işleyici (tüm mesajları filtreler, komut olmayanları)
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
-    # Mesaj işleyicileri ekle
-    # Önce .lua dosyalarını yakala
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    # Sonra normal metinleri (ama komutları değil) yakala
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    # Botu başlat
+    # Botu çalıştırma
     logger.info("Bot başlatılıyor...")
-    application.run_polling()
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
+
