@@ -9,5 +9,6 @@
   "dependencies": {
     "node-telegram-bot-api": "^0.61.0", 
     "luamin": "^1.0.4"
+    "axios": "^1.6.0"
   }
 }
