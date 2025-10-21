@@ -1,0 +1,13 @@
+{
+  "name": "lua-telegram-obfuscator",
+  "version": "1.0.0",
+  "description": "Node.js Telegram bot for Lua code minification using luamin.",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"  
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.61.0", 
+    "luamin": "^1.0.4"
+  }
+}
