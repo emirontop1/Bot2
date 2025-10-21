@@ -1,19 +1,22 @@
 // bot.js
 
 const TelegramBot = require('node-telegram-bot-api');
-const luamin = require('luamin'); // Lua Minifier (Node.js paketi)
+const luamin = require('luamin');
+const axios = require('axios'); // Dosya indirmek için
+const path = require('path');   // Dosya yolu işlemleri için
 
-// Lütfen buraya kendi Telegram Bot Token'ınızı girin.
-// Veya Railway'de Environment Variable (Ortam Değişkeni) olarak ayarlayın.
+// Ortam değişkenini (Environment Variable) veya doğrudan token'ı kullanın
 const token = '8350124542:AAHwsh0LksJAZOW-hHTY1BTu5i8-XKGFn18'; 
 
-// Bot örneğini oluştur
 const bot = new TelegramBot(token, {polling: true});
 
-console.log('Bot başlatılıyor...');
+console.log('Bot başlatıldı ve dosya işleme özelliğine sahip...');
+
+// Telegram API dosya indirme URL'sinin temel kısmı
+const FILE_BASE_URL = `https://api.telegram.org/file/bot${token}/`;
 
 /**
- * Lua kodunu gizlemek (küçültmek) için kullanılan ana işlev.
+ * Lua kodunu gizlemek (küçültmek) için ana işlev.
  */
 function obfuscateLuaCode(luaCode) {
     try {
@@ -21,44 +24,84 @@ function obfuscateLuaCode(luaCode) {
         return minifiedCode;
     } catch (error) {
         console.error('Lua kodunu gizlerken hata oluştu:', error.message);
-        return `HATA: Kod gizlenirken bir sorun oluştu. Kodun geçerli bir Lua kodu olduğundan emin olun. Detay: ${error.message}`;
+        return null; // Başarısızlık durumunda null döndür
     }
 }
+
+// ==============================================================================
+// TELEGRAM BOT İŞLEVLERİ
+// ==============================================================================
 
 // /start komutu
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     bot.sendMessage(
         chatId, 
-        "Merhaba! Ben Node.js ile yazılmış Lua Kod Gizleme Botuyum. Bana gizlemek istediğiniz Lua kodunu `/minify [KOD]` komutu ile gönderin."
+        "Merhaba! Ben Lua Kod Gizleme Botuyum. Bana gizlemek istediğiniz **Lua kod dosyasını (.lua)** gönderin. İçeriği gizleyip geri yollayacağım."
     );
 });
 
-// /minify komutu
-bot.onText(/\/minify (.+)/, (msg, match) => {
+// Dosya İşleyici
+bot.on('document', async (msg) => {
     const chatId = msg.chat.id;
-    const luaCode = match[1]; 
+    const document = msg.document;
 
-    console.log(`[${chatId}] Gizlenecek kod alındı: ${luaCode.substring(0, 50)}...`);
+    // Sadece .lua uzantılı dosyaları kabul et
+    const fileExtension = path.extname(document.file_name).toLowerCase();
 
-    const obfuscatedCode = obfuscateLuaCode(luaCode);
+    if (fileExtension !== '.lua') {
+        bot.sendMessage(chatId, `Üzgünüm, sadece Lua dosyalarını (*.lua) işleyebilirim.`);
+        return;
+    }
 
-    if (obfuscatedCode.startsWith('HATA:')) {
-        bot.sendMessage(chatId, obfuscatedCode);
-    } else {
-        // Kodu Markdown ile gönder
-        bot.sendMessage(
-            chatId, 
-            `**Gizlenmiş Lua Kodu:**\n\`\`\`lua\n${obfuscatedCode}\n\`\`\``,
-            { parse_mode: 'Markdown' }
+    try {
+        // 1. Telegram'dan dosya bilgisini al (file_path'i öğrenmek için)
+        const file = await bot.getFile(document.file_id);
+        const fileUrl = FILE_BASE_URL + file.file_path;
+
+        // 2. Dosya içeriğini indir
+        const response = await axios.get(fileUrl, { responseType: 'text' });
+        const luaCode = response.data;
+
+        console.log(`[${chatId}] '${document.file_name}' dosyası alındı ve indirildi.`);
+
+        // 3. Kodu gizle (minify et)
+        const obfuscatedCode = obfuscateLuaCode(luaCode);
+
+        if (!obfuscatedCode) {
+            bot.sendMessage(chatId, `HATA: ${document.file_name} dosyası geçerli bir Lua kodu değil veya gizleme sırasında hata oluştu.`);
+            return;
+        }
+
+        // 4. Yeni dosya adı oluştur
+        const originalName = path.basename(document.file_name, '.lua');
+        const newFileName = `${originalName}_minified.lua`;
+
+        // 5. Gizlenmiş içeriği dosya olarak geri yükle
+        // Buffer'ı doğrudan Telegram'a göndermek en temiz yoldur
+        const buffer = Buffer.from(obfuscatedCode, 'utf8');
+
+        await bot.sendDocument(
+            chatId,
+            buffer,
+            {}, // Opsiyonlar (boş bırakılabilir)
+            {
+                filename: newFileName,
+                contentType: 'text/plain'
+            }
         );
+
+        console.log(`[${chatId}] '${newFileName}' dosyası başarıyla geri gönderildi.`);
+
+    } catch (error) {
+        console.error('Dosya işleme sırasında genel hata:', error.message);
+        bot.sendMessage(chatId, `Dosyanızı işlerken beklenmedik bir hata oluştu. Lütfen daha sonra tekrar deneyin.`);
     }
 });
 
-// Diğer mesajları bilgilendirme
+// Komut dışı metinler
 bot.on('message', (msg) => {
-    const chatId = msg.chat.id;
-    if (msg.text && !msg.text.startsWith('/') && !msg.reply_to_message) {
-        bot.sendMessage(chatId, 'Lütfen kodu `/minify [KODUNUZ]` formatında gönderin veya `/start` yazarak yardım alın.');
+    if (msg.text && !msg.text.startsWith('/') && !msg.document) {
+        bot.sendMessage(msg.chat.id, 'Lütfen doğrudan bir Lua dosyası gönderin.');
     }
 });
