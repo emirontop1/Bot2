@@ -2,58 +2,96 @@
 
 const TelegramBot = require('node-telegram-bot-api');
 const luamin = require('luamin');
-const os = require('os'); // İşletim sistemi fonksiyonları için
+const { Buffer } = require('buffer');
 
-// Tokenınızı Ortam Değişkeninden alın. Bu, Railway'de hata vermeden çalışmanın en güvenli yoludur.
+// Tokenınızı Ortam Değişkeninden alın.
 const token = '8350124542:AAHwsh0LksJAZOW-hHTY1BTu5i8-XKGFn18'; 
 
 const bot = new TelegramBot(token, { polling: true });
-console.log('Gelişmiş Lua Obfuscator Botu başlatılıyor...');
+console.log('Özel Lua Obfuscator Botu başlatılıyor...');
 
 // ==============================================================================
-// LUA OBFUSCATOR İŞLEVİ (Sizin Mantığınızla)
+// YARDIMCI İŞLEVLER
 // ==============================================================================
 
 /**
- * Lua kodunu önce obfuskate eder, sonra tüm local değişkenleri üste taşımayı simüle eder.
- * @param {string} luaCode - Obfuskate edilecek Lua kodu.
- * @returns {string} Obfuskate edilmiş kod.
+ * Rastgele bir string (değişken ismi) üretir.
+ * @returns {string} Benzersiz bir isim
  */
-function advancedObfuscate(luaCode) {
+function generateRandomName() {
+    // Lua değişken ismi kurallarına uygun, okunması zor bir isim
+    return '_' + Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+}
+
+// ==============================================================================
+// LUA ÖZEL OBFUSCATION İŞLEVİ
+// ==============================================================================
+
+/**
+ * Lua kodunu özel mantıkla obfuskate eder:
+ * 1. Tüm local değişkenleri bulur.
+ * 2. Yeni rastgele isimler atar.
+ * 3. Tüm local tanımları kodun en başına taşır.
+ * 4. Kalan kodu minifiye eder.
+ * * @param {string} luaCode - Obfuskate edilecek Lua kodu.
+ * @returns {string | null} Obfuskate edilmiş kod veya hata durumunda null.
+ */
+function customObfuscate(luaCode) {
     try {
-        // 1. luamin ile standart obfuskasyon ve minifikasyon yap
-        // Bu, değişken isimlerini rastgele karakterlere çevirir (varsayılan obfuskasyon)
-        const standardObfuscated = luamin.obfuscate(luaCode, {
-            renameVariables: true, // Değişken isimlerini değiştir
-            renameGlobals: false,  // Global isimlere dokunma (kritik)
-            preserveComments: false
-        });
+        // 1. Kodu Minify Et (Yorum ve boşlukları temizle)
+        let processedCode = luamin.minify(luaCode);
 
-        // 2. Sizin isteğiniz: Tüm local değişken tanımlarını kodun en başına taşıma
-        // luamin zaten kodu minifiye ettiği için, biz de kodun en başına rastgele
-        // string tanımları ekleyerek bu mantığı simüle edeceğiz.
+        // 2. Tüm local değişkenleri ve fonksiyon tanımlarını bul
+        // Regex: local [a-zA-Z0-9_]+
+        // Regex: local [a-zA-Z0-9_]+ = ...
+        // Regex: local function [a-zA-Z0-9_]+
         
-        // Bu simülasyon, değişken isimlerini değiştirdiği için etkili bir obfuskasyon sağlar.
-        // Gerçek bir Abstract Syntax Tree (AST) manipülasyonu için daha ağır kütüphaneler gerekir, 
-        // ancak luamin çıktısını kullanmak Railway için en hızlı ve en hafif çözümdür.
-
-        const localVars = [
-            `local a${Math.random().toString(36).substring(2)} = "obfustoken"`,
-            `local b${Math.random().toString(36).substring(2)} = os.clock()`,
-            `local c${Math.random().toString(36).substring(2)} = tonumber`
-        ];
+        // Basit local değişken bulucu (değişken ismi yakalanır)
+        const localDeclarationsRegex = /local\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(=?)/g;
         
-        const header = `-- Obfuskasyon Tipi: Gelişmiş\n` 
-                     + `-- Bot: Telegram Advanced Obfuscator\n` 
-                     + localVars.join('\n') 
-                     + '\n\n';
+        const localNames = {}; // {orijinal_isim: yeni_isim}
+        
+        // Tüm local değişken ve fonksiyon isimlerini bul ve benzersiz isimler ata
+        let match;
+        while ((match = localDeclarationsRegex.exec(processedCode)) !== null) {
+            const originalName = match[1];
+            if (!localNames[originalName]) {
+                 localNames[originalName] = generateRandomName();
+            }
+        }
+        
+        // 3. Kod içindeki tüm kullanımlarını yeni isimlerle değiştir
+        let newCode = processedCode;
+        const localHeader = [];
 
-        // 3. Header ve obfuskate edilmiş kodu birleştir
-        return header + standardObfuscated;
+        // Önceki Regex ile tekrar değişken isimlerini bul ve global değiştirme yap
+        for (const [originalName, newName] of Object.entries(localNames)) {
+            // Değişkeni sadece kelime olarak değiştir (fonksiyon isimleri, metinler içindeki kelimeler değil)
+            const replaceRegex = new RegExp(`\\b${originalName}\\b`, 'g');
+            newCode = newCode.replace(replaceRegex, newName);
+            
+            // Başlık (Header) için local tanımını oluştur (varsayılan değer olmadan)
+            localHeader.push(`local ${newName}`);
+        }
+        
+        // 4. Tüm local tanımlarını koddan kaldır
+        // Regex: ^local [a-zA-Z_][a-zA-Z0-9_]*(\s*=\s*.*?)?(\s*;)?\s*
+        newCode = newCode.replace(/local\s+[a-zA-Z_][a-zA-Z0-9_]*(\s*=\s*.*?|\s*function\s*.*?|\s*function)?/g, '');
+
+
+        // 5. Başa, rastgele isimlerle tanımlanmış local'leri ekle
+        const finalHeader = `-- Obfuskasyon Tipi: Özel (Local Üste Çekme)\n` 
+                          + `-- Bot: Telegram Advanced Obfuscator\n\n` 
+                          + localHeader.join(';') + '\n\n';
+
+        // newCode'u bir kez daha minify edelim, çünkü kaldırma işlemleri boşluk yaratmış olabilir
+        const fullyMinifiedCode = luamin.minify(newCode);
+
+        return finalHeader + fullyMinifiedCode;
         
     } catch (error) {
-        console.error("Obfuscation hatası:", error);
-        return `-- HATA: Obfuskasyon başarısız oldu. Girdiğiniz kodun geçerli bir Lua kodu olduğundan emin olun.\n` + error.message;
+        console.error("Özel Obfuscation hatası:", error);
+        return null;
     }
 }
 
@@ -66,46 +104,46 @@ bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     bot.sendMessage(
         chatId, 
-        "Merhaba! Ben Gelişmiş Lua Obfuscator Botuyum. Bana obfuskate etmek istediğiniz **Lua kodunu** gönderin. Tüm local değişkenleri üste alma mantığıyla obfuskate edip geri göndereyim. 😈\n\n**Kullanım:** Sadece Lua kodunu doğrudan gönderin."
+        "🤖 **Özel Lua Obfuscator Botu** başlatıldı.\n\nBana obfuskate etmek istediğiniz **Lua kodunu doğrudan mesaj olarak** gönderin.\n\n⚙️ **Özel Mantık:**\n* Tüm local değişkenleriniz rastgele isimlerle değiştirilir.\n* Tüm local tanımları, kodun en üstüne çekilir."
     );
 });
 
 // Metin (Lua kodu) İşleyici
-bot.on('message', (msg) => {
+bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
+    const isCommand = text && text.startsWith('/');
 
-    // Komutlar ve fotoğraf dışındaki her şeyi Lua kodu olarak kabul et
-    if (text && !text.startsWith('/')) {
+    if (text && !isCommand && !msg.photo && !msg.document) {
         
-        // 1. Kodu obfuskate et
-        const obfuscatedCode = advancedObfuscate(text);
+        await bot.sendMessage(chatId, "Kodunuz alınıyor ve **özel obfuskasyon** işlemi başlatılıyor...");
 
-        // 2. Mesajı geri gönder
-        bot.sendMessage(
-            chatId, 
-            `\`\`\`lua\n${obfuscatedCode}\n\`\`\``, 
-            { 
-                caption: "İşte gelişmiş obfuskasyon çıktınız!",
-                parse_mode: 'Markdown' // Kodu güzel göstermek için
-            }
+        // 1. Kodu obfuskate et
+        const obfuscatedCode = customObfuscate(text);
+
+        if (!obfuscatedCode) {
+            await bot.sendMessage(chatId, "HATA: Girdiğiniz kod geçerli bir Lua kodu değil veya obfuskasyon sırasında beklenmedik bir hata oluştu. Lütfen kodu kontrol edin.");
+            return;
+        }
+
+        // 2. Obfuskate edilmiş içeriği Buffer'a dönüştür (Dosya oluşturmak için)
+        const outputBuffer = Buffer.from(obfuscatedCode, 'utf8');
+        const newFileName = 'custom_obfuscated.lua';
+
+        // 3. Dosya olarak geri gönder
+        await bot.sendDocument(
+            chatId,
+            outputBuffer,
+            { caption: 'İşte özel obfuskasyon çıktınız! Localler üste çekildi ve isimler değişti.' },
+            { filename: newFileName, contentType: 'text/plain' }
         ).catch(error => {
-            // Eğer kod çok uzunsa (Telegram sınırı ~4096 karakter), belge olarak gönder
-            if (error.response && error.response.body && error.response.body.description.includes('too long')) {
-                bot.sendDocument(
-                    chatId,
-                    Buffer.from(obfuscatedCode, 'utf8'), // Buffer ile dosya oluşturma
-                    { caption: 'Kodunuz Telegram mesaj limiti aştığı için dosya olarak gönderildi.' },
-                    { filename: 'obfuscated.lua', contentType: 'text/plain' }
-                );
-            } else {
-                 console.error("Mesaj gönderme hatası:", error.message);
-                 bot.sendMessage(chatId, "Üzgünüm, obfuskasyon sonucunu gönderirken bir hata oluştu.");
-            }
+            console.error("Dosya gönderme hatası:", error.message);
+            bot.sendMessage(chatId, "Üzgünüm, obfuskasyon sonucunu dosya olarak gönderirken bir hata oluştu.");
         });
         
-    } else if (msg.photo || msg.document || msg.audio) {
-        // Fotoğraf veya diğer medya türlerini yanıtlama
-        bot.sendMessage(chatId, "Lütfen sadece obfuskate etmek istediğiniz **metin** (Lua kodu) gönderin.");
+    } else if (isCommand && text !== '/start') {
+         await bot.sendMessage(chatId, 'Bilinmeyen komut. Lütfen sadece Lua kodunu gönderin veya /start yazın.');
+    } else if (msg.photo || msg.document) {
+        await bot.sendMessage(chatId, "Lütfen sadece obfuskate etmek istediğiniz **metin** (Lua kodu) gönderin.");
     }
 });
