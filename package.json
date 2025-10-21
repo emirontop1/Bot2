@@ -9,8 +9,8 @@
   "dependencies": {
     "node-telegram-bot-api": "^0.61.0",
     "axios": "^1.6.0",
-    "jimp": "^0.22.28",         // Görsel işleme için
-    "face-api.js": "^0.22.2",    // Yüz tespiti için
-    "@tensorflow/tfjs-node": "^4.17.0" // face-api.js'in temel bağımlılığı
+    "jimp": "^0.22.28",       
+    "face-api.js": "^0.22.2",    
+    "@tensorflow/tfjs-node": "^4.17.0"
   }
 }
