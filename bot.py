@@ -1,155 +1,111 @@
-#!/usr/bin/env python3
-"""
-Telegram bot: fotoğraf alır, fotoğraftaki yüzleri tespit edip mozaikler, sonucu geri yollar.
-Kullanım: TELEGRAM_TOKEN ortam değişkenini ayarla.
-"""
 import os
-import logging
+import cv2
+import numpy as np
 import tempfile
 import requests
 from io import BytesIO
-from PIL import Image
-import numpy as np
-import cv2
-from telegram import Update, InputFile
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from PIL import Image, ImageDraw
+from telegram import (
+    Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
+)
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Haarcascade URL (otomatik indirilecek eğer yoksa)
 CASCADE_URL = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
 CASCADE_PATH = "haarcascade_frontalface_default.xml"
 
-
 def ensure_cascade():
     if not os.path.exists(CASCADE_PATH):
-        logger.info("Haarcascade bulunamadı, indiriliyor...")
         r = requests.get(CASCADE_URL, timeout=15)
         r.raise_for_status()
-        with open(CASCADE_PATH, "wb") as f:
-            f.write(r.content)
-        logger.info("İndirildi: %s", CASCADE_PATH)
-    else:
-        logger.info("Haarcascade mevcut.")
+        open(CASCADE_PATH, "wb").write(r.content)
 
-
-def pixelate_region(img: np.ndarray, x, y, w, h, blocks=12):
-    """
-    Verilen görüntü (numpy) içindeki dikdörtgen bölgeyi bloklu mozaik yapar.
-    blocks: mozaik yoğunluğu (daha az -> büyük blok -> daha çok sansür)
-    """
-    face = img[y:y+h, x:x+w]
-    if face.size == 0:
-        return img
-    # küçük bir resmi tekrar büyütüp pixel effect
-    (fh, fw) = (max(1, blocks), max(1, blocks))
-    # resize down
-    small = cv2.resize(face, (fw, fh), interpolation=cv2.INTER_LINEAR)
-    # resize up to original face size (nearest for blocky look)
-    pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
-    img[y:y+h, x:x+w] = pixelated
-    return img
-
-
-def censor_faces_pil(image_pil: Image.Image) -> Image.Image:
-    """
-    PIL Image alır, yüzleri tespit edip mozaik uygular, PIL Image döner.
-    """
-    # convert to OpenCV BGR
-    img = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+def detect_faces(image: Image.Image):
+    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
     ensure_cascade()
-    face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+    cascade = cv2.CascadeClassifier(CASCADE_PATH)
+    faces = cascade.detectMultiScale(gray, 1.1, 5)
+    return faces
 
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-    logger.info("Tespit edilen yüz sayısı: %d", len(faces))
-    for (x, y, w, h) in faces:
-        # mozaik uygulamak için yüz bölgesini biraz genişletebiliriz:
-        pad = int(0.15 * w)
-        x0 = max(0, x - pad)
-        y0 = max(0, y - pad)
-        x1 = min(img.shape[1], x + w + pad)
-        y1 = min(img.shape[0], y + h + pad)
-        img = pixelate_region(img, x0, y0, x1 - x0, y1 - y0, blocks=12)
-
-    # BGR -> RGB -> PIL
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(img_rgb)
-
-
-# Telegram handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Merhaba! Bana bir fotoğraf gönder, içindeki yüzleri sansürleyip geri göndereyim."
-    )
-
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Fotoğraf gönder: ben yüzleri mozaikleyip geri yollarım.")
-
+    await update.message.reply_text("Merhaba! Fotoğraf gönder, yüzleri bulup sansürlemene yardımcı olayım.")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg.photo:
-        await msg.reply_text("Lütfen bir fotoğraf gönder.")
-        return
-
-    # En yüksek çözünürlüklü fotoğrafı seç
     photo = msg.photo[-1]
     file = await photo.get_file()
-    logger.info("Dosya indiriliyor: %s", file.file_id)
-
-    # Geçici dosyaya indir
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = os.path.join(tmpdir, "input.jpg")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "photo.jpg")
         await file.download_to_drive(custom_path=path)
-        logger.info("İndirildi: %s", path)
+        img = Image.open(path).convert("RGB")
+        faces = detect_faces(img)
+        if len(faces) == 0:
+            await msg.reply_text("Yüz bulunamadı.")
+            return
 
-        # Aç ve işle
-        with Image.open(path) as im:
-            # convert to RGB to avoid issues with PNG/CMYK
-            im = im.convert("RGB")
-            result = censor_faces_pil(im)
+        # Kaydet data
+        context.user_data["photo"] = img
+        context.user_data["faces"] = faces
+        context.user_data["selected"] = [False] * len(faces)
 
-            out_path = os.path.join(tmpdir, "out.jpg")
-            result.save(out_path, format="JPEG", quality=85)
-            logger.info("İşlendi ve kaydedildi: %s", out_path)
+        await msg.reply_text(f"{len(faces)} yüz bulundu. Hangilerini sansürlemek istersin?")
+        for i, (x, y, w, h) in enumerate(faces):
+            face_crop = img.crop((x, y, x+w, y+h))
+            bio = BytesIO()
+            face_crop.save(bio, format="JPEG")
+            bio.seek(0)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🕶️ Sansürle", callback_data=f"toggle_{i}")]
+            ])
+            await msg.reply_photo(photo=bio, caption=f"Yüz #{i+1}", reply_markup=kb)
+        await msg.reply_text("Tüm seçimleri yaptıysan 'Bitir' butonuna bas:", 
+                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Bitir", callback_data="finish")]]))
 
-            # Gönder
-            with open(out_path, "rb") as f:
-                await msg.reply_photo(photo=InputFile(f), caption="İşte sansürlenmiş fotoğrafın.")
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("toggle_"):
+        idx = int(data.split("_")[1])
+        context.user_data["selected"][idx] = not context.user_data["selected"][idx]
+        status = "Sansürlenecek ✅" if context.user_data["selected"][idx] else "Sansürlenmeyecek ❌"
+        await query.edit_message_caption(caption=f"Yüz #{idx+1} - {status}",
+                                         reply_markup=query.message.reply_markup)
+    elif data == "finish":
+        img = context.user_data.get("photo")
+        faces = context.user_data.get("faces", [])
+        selected = context.user_data.get("selected", [])
 
+        if not img or not faces:
+            await query.message.reply_text("Önce bir fotoğraf gönder.")
+            return
 
-async def handle_nonphoto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bu bot sadece fotoğraf işliyor. Lütfen fotoğraf gönder.")
+        result = img.copy()
+        draw = ImageDraw.Draw(result)
+        for (flag, (x, y, w, h)) in zip(selected, faces):
+            if flag:
+                draw.rectangle([x, y, x+w, y+h], fill="black")
 
+        bio = BytesIO()
+        result.save(bio, format="JPEG")
+        bio.seek(0)
+        await query.message.reply_photo(photo=bio, caption="Sansürlenmiş final görüntü 🎭")
+        await query.message.reply_text("İşlem tamamlandı ✅")
 
 def main():
     token = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU"
     if not token:
-        logger.error("TELEGRAM_TOKEN ortam değişkeni ayarlı değil.")
-        raise SystemExit("Lütfen TELEGRAM_TOKEN ortam değişkenini ayarla.")
+        raise SystemExit("TELEGRAM_TOKEN tanımlanmalı.")
 
-    # Ensure cascade exists early (download if gerekli)
-    try:
-        ensure_cascade()
-    except Exception as e:
-        logger.warning("Haarcascade indirme hatası: %s", e)
-
-    # Create and run bot (python-telegram-bot v20+ style async)
     app = ApplicationBuilder().token(token).build()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(~filters.PHOTO & filters.ALL, handle_nonphoto))
-
-    logger.info("Bot çalışıyor...")
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    print("Bot çalışıyor...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
