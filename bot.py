@@ -2,41 +2,20 @@ import os
 import cv2
 import numpy as np
 import tempfile
-import requests
 from io import BytesIO
-from PIL import Image, ImageDraw
-from telegram import (
-    Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
-)
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
-)
+from PIL import Image
+import mediapipe as mp
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-CASCADE_URL = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
-CASCADE_PATH = "haarcascade_frontalface_default.xml"
+mp_face = mp.solutions.face_detection
+mp_drawing = mp.solutions.drawing_utils
 
-def ensure_cascade():
-    if not os.path.exists(CASCADE_PATH):
-        r = requests.get(CASCADE_URL, timeout=15)
-        r.raise_for_status()
-        open(CASCADE_PATH, "wb").write(r.content)
-
-def detect_faces_cv2(frame):
-    """Tek karede yüzleri bulur (numpy array)"""
-    ensure_cascade()
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    cascade = cv2.CascadeClassifier(CASCADE_PATH)
-    faces = cascade.detectMultiScale(gray, 1.1, 5)
-    return faces
-
-def detect_faces(image):
-    """PIL Image içinde yüzleri bulur"""
-    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    return detect_faces_cv2(img)
-
+# ---------------- Fotoğraf ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Merhaba! Fotoğraf veya video gönder, yüzleri sansürleyebilirim 🎭")
+    await update.message.reply_text(
+        "Merhaba! Fotoğraf veya video gönder, yüzleri sansürleyebilirim 🎭"
+    )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -46,21 +25,34 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "photo.jpg")
         await file.download_to_drive(custom_path=path)
-        img = Image.open(path).convert("RGB")
-        faces = detect_faces(img)
-        if len(faces) == 0:
-            await msg.reply_text("Yüz bulunamadı.")
-            return
+        img = cv2.imread(path)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        draw = ImageDraw.Draw(img)
-        for (x, y, w, h) in faces:
-            draw.rectangle([x, y, x+w, y+h], fill="black")
+        with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
+            results = face_detection.process(img_rgb)
+            if not results.detections:
+                await msg.reply_text("Yüz bulunamadı 😢")
+                return
+
+            # Blur sansürleme
+            for detection in results.detections:
+                bbox = detection.location_data.relative_bounding_box
+                h, w, _ = img.shape
+                x1 = int(bbox.xmin * w)
+                y1 = int(bbox.ymin * h)
+                x2 = int((bbox.xmin + bbox.width) * w)
+                y2 = int((bbox.ymin + bbox.height) * h)
+                face = img[y1:y2, x1:x2]
+                face = cv2.GaussianBlur(face, (51, 51), 30)
+                img[y1:y2, x1:x2] = face
 
         bio = BytesIO()
-        img.save(bio, format="JPEG")
+        _, buf = cv2.imencode(".jpg", img)
+        bio.write(buf)
         bio.seek(0)
-        await msg.reply_photo(photo=bio, caption=f"{len(faces)} yüz sansürlendi ✅")
+        await msg.reply_photo(photo=bio, caption="Sansürlenmiş fotoğraf 🎭")
 
+# ---------------- Video ----------------
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     video = msg.video
@@ -84,22 +76,48 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_i = 0
+        prev_faces = []
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+        with mp_face.FaceDetection(model_selection=0, min_detection_confidence=0.5) as face_detection:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-            faces = detect_faces_cv2(frame)
-            for (x, y, w, h) in faces:
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 0), -1)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = face_detection.process(frame_rgb)
 
-            out.write(frame)
-            frame_i += 1
-            if frame_i % int(fps * 2) == 0:  # her 2 saniyede bir ilerleme mesajı
-                await msg.reply_chat_action("upload_video")
+                current_faces = []
+                if results.detections:
+                    for det in results.detections:
+                        bbox = det.location_data.relative_bounding_box
+                        x1 = int(bbox.xmin * width)
+                        y1 = int(bbox.ymin * height)
+                        x2 = int((bbox.xmin + bbox.width) * width)
+                        y2 = int((bbox.ymin + bbox.height) * height)
+                        current_faces.append((x1, y1, x2, y2))
+
+                # Smooth yüz takibi (moving average gibi)
+                if prev_faces:
+                    smoothed_faces = []
+                    for i, (x1, y1, x2, y2) in enumerate(current_faces):
+                        if i < len(prev_faces):
+                            px1, py1, px2, py2 = prev_faces[i]
+                            x1 = int(0.6*px1 + 0.4*x1)
+                            y1 = int(0.6*py1 + 0.4*y1)
+                            x2 = int(0.6*px2 + 0.4*x2)
+                            y2 = int(0.6*py2 + 0.4*y2)
+                        smoothed_faces.append((x1, y1, x2, y2))
+                    current_faces = smoothed_faces
+
+                for (x1, y1, x2, y2) in current_faces:
+                    face = frame[y1:y2, x1:x2]
+                    face = cv2.GaussianBlur(face, (51, 51), 30)
+                    frame[y1:y2, x1:x2] = face
+
+                prev_faces = current_faces
+
+                out.write(frame)
 
         cap.release()
         out.release()
@@ -107,6 +125,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(output_path, "rb") as f:
             await msg.reply_video(video=f, caption="Yüzler sansürlendi 🎭")
 
+# ---------------- Bot ----------------
 async def error_handler(update, context):
     print(f"Hata: {context.error}")
 
