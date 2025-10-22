@@ -79,7 +79,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         faces = context.user_data.get("faces", [])
         selected = context.user_data.get("selected", [])
 
-        if not img or not faces:
+        if img is None or len(faces) == 0:
             await query.message.reply_text("Önce bir fotoğraf gönder.")
             return
 
