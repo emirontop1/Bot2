@@ -22,21 +22,27 @@ def ensure_cascade():
         r.raise_for_status()
         open(CASCADE_PATH, "wb").write(r.content)
 
-def detect_faces(image: Image.Image):
-    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+def detect_faces_cv2(frame):
+    """Tek karede yüzleri bulur (numpy array)"""
     ensure_cascade()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     cascade = cv2.CascadeClassifier(CASCADE_PATH)
     faces = cascade.detectMultiScale(gray, 1.1, 5)
     return faces
 
+def detect_faces(image):
+    """PIL Image içinde yüzleri bulur"""
+    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    return detect_faces_cv2(img)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Merhaba! Fotoğraf gönder, yüzleri bulup sansürlemene yardımcı olayım.")
+    await update.message.reply_text("Merhaba! Fotoğraf veya video gönder, yüzleri sansürleyebilirim 🎭")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     photo = msg.photo[-1]
     file = await photo.get_file()
+
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "photo.jpg")
         await file.download_to_drive(custom_path=path)
@@ -46,64 +52,72 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("Yüz bulunamadı.")
             return
 
-        # Kaydet data
-        context.user_data["photo"] = img
-        context.user_data["faces"] = faces
-        context.user_data["selected"] = [False] * len(faces)
-
-        await msg.reply_text(f"{len(faces)} yüz bulundu. Hangilerini sansürlemek istersin?")
-        for i, (x, y, w, h) in enumerate(faces):
-            face_crop = img.crop((x, y, x+w, y+h))
-            bio = BytesIO()
-            face_crop.save(bio, format="JPEG")
-            bio.seek(0)
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🕶️ Sansürle", callback_data=f"toggle_{i}")]
-            ])
-            await msg.reply_photo(photo=bio, caption=f"Yüz #{i+1}", reply_markup=kb)
-        await msg.reply_text("Tüm seçimleri yaptıysan 'Bitir' butonuna bas:", 
-                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Bitir", callback_data="finish")]]))
-
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("toggle_"):
-        idx = int(data.split("_")[1])
-        context.user_data["selected"][idx] = not context.user_data["selected"][idx]
-        status = "Sansürlenecek ✅" if context.user_data["selected"][idx] else "Sansürlenmeyecek ❌"
-        await query.edit_message_caption(caption=f"Yüz #{idx+1} - {status}",
-                                         reply_markup=query.message.reply_markup)
-    elif data == "finish":
-        img = context.user_data.get("photo")
-        faces = context.user_data.get("faces", [])
-        selected = context.user_data.get("selected", [])
-
-        if img is None or not isinstance(faces, (list, tuple, np.ndarray)) or len(faces) == 0:
-            await query.message.reply_text("Önce bir fotoğraf gönder.")
-            return
-
-        result = img.copy()
-        draw = ImageDraw.Draw(result)
-        for (flag, (x, y, w, h)) in zip(selected, faces):
-            if flag:
-                draw.rectangle([x, y, x+w, y+h], fill="black")
+        draw = ImageDraw.Draw(img)
+        for (x, y, w, h) in faces:
+            draw.rectangle([x, y, x+w, y+h], fill="black")
 
         bio = BytesIO()
-        result.save(bio, format="JPEG")
+        img.save(bio, format="JPEG")
         bio.seek(0)
-        await query.message.reply_photo(photo=bio, caption="Sansürlenmiş final görüntü 🎭")
-        await query.message.reply_text("İşlem tamamlandı ✅")
+        await msg.reply_photo(photo=bio, caption=f"{len(faces)} yüz sansürlendi ✅")
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    video = msg.video
+    if not video:
+        await msg.reply_text("Video alınamadı.")
+        return
+
+    await msg.reply_text("Videoda yüzler sansürleniyor, lütfen bekle... ⏳")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = os.path.join(tmp, "input.mp4")
+        output_path = os.path.join(tmp, "output.mp4")
+
+        file = await video.get_file()
+        await file.download_to_drive(custom_path=input_path)
+
+        cap = cv2.VideoCapture(input_path)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_i = 0
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            faces = detect_faces_cv2(frame)
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 0), -1)
+
+            out.write(frame)
+            frame_i += 1
+            if frame_i % int(fps * 2) == 0:  # her 2 saniyede bir ilerleme mesajı
+                await msg.reply_chat_action("upload_video")
+
+        cap.release()
+        out.release()
+
+        with open(output_path, "rb") as f:
+            await msg.reply_video(video=f, caption="Yüzler sansürlendi 🎭")
+
+async def error_handler(update, context):
+    print(f"Hata: {context.error}")
 
 def main():
     token = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU"
-    if not token:
-        raise SystemExit("TELEGRAM_TOKEN tanımlanmalı.")
-
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    app.add_error_handler(error_handler)
+
     print("Bot çalışıyor...")
     app.run_polling()
 
