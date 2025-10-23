@@ -1,0 +1,1 @@
+ezik: python main.py
