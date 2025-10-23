@@ -6,3 +6,4 @@ Pillow
 Flask
 gunicorn
 tf-keras
+python-telegram-bot
