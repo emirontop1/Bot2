@@ -3,9 +3,9 @@ FROM python:3.10-slim
 
 # libGL.so.1 bağımlılığını (OpenCV için gerekli) sistem düzeyinde kurun.
 # Bu, hatayı kesin olarak çözecektir.
+# Eksik olan libGL.so.1 kütüphanesini sağlayan güncel Debian paketini kurun.
 RUN apt-get update && \
-    apt-get install -y libgl1-mesa-glx && \
-    # Kurulum sonrası önbelleği temizleyerek imaj boyutunu küçültün.
+    apt-get install -y libgl1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Çalışma dizinini belirleyin.
