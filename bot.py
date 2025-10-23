@@ -1,23 +1,42 @@
+import json
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, ChatMemberHandler
 )
 
 OWNER_USERNAME = "DincEMR"
-joined_groups = set()  # botun bulunduğu grupları burada tutar
+DATA_FILE = "joined_groups.json"
 
 
-# Bot bir gruba eklendiğinde tetiklenir
+# Dosyadan grupları yükle
+def load_groups():
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+
+
+# Grupları dosyaya kaydet
+def save_groups(groups):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(groups), f, ensure_ascii=False, indent=2)
+
+
+joined_groups = load_groups()
+
+
+# Bot bir gruba eklendiğinde veya kaldırıldığında çalışır
 async def track_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.chat
     if chat and chat.type in ["group", "supergroup"]:
         joined_groups.add(chat.title)
+        save_groups(joined_groups)
 
 
 # /serverst komutu
 async def serverst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-
     if user.username != OWNER_USERNAME:
         await update.message.reply_text("Bu komutu sadece owner kullanabilir.")
         return
@@ -29,7 +48,6 @@ async def serverst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "📋 Botun bulunduğu gruplar:\n\n" + "\n".join(f"- {name}" for name in joined_groups)
     sent_msg = await update.message.reply_text(msg)
 
-    # Silme denemesi
     try:
         await sent_msg.delete()
     except Exception as e:
