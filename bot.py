@@ -1,9 +1,8 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-OWNER_USERNAME = "DincEMR"  # sadece owner kullanabilecek
+OWNER_USERNAME = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU"  # sadece owner komutu çalıştırabilir
 
-# /serverst komutu
 async def serverst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.username != OWNER_USERNAME:
@@ -11,98 +10,40 @@ async def serverst(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     bot = context.bot
-    chat_list = await bot.get_updates()
-    group_names = set()
 
-    # Güncellemelerden botun bulunduğu grupları toplar
-    for update_item in chat_list:
-        chat = getattr(update_item.message, "chat", None)
-        if chat and chat.type in ["group", "supergroup"]:
-            group_names.add(chat.title)
+    try:
+        chat_list = await bot.get_updates()
+        group_names = set()
 
-    if not group_names:
-        await update.message.reply_text("Bot şu anda hiçbir grupta değil.")
-        return
+        for update_item in chat_list:
+            chat = getattr(update_item.message, "chat", None)
+            if chat and chat.type in ["group", "supergroup"]:
+                group_names.add(chat.title)
 
-    msg = "📋 Botun bulunduğu gruplar:\n\n" + "\n".join(f"- {name}" for name in group_names)
-    await update.message.reply_text(msg)
+        if not group_names:
+            await update.message.reply_text("Bot şu anda hiçbir grupta değil.")
+            return
 
-# Botu başlat
-if __name__ == "__main__":
-    app = ApplicationBuilder().token("8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU").build()
-    app.add_handler(CommandHandler("serverst", serverst))
-    app.run_polling()        
-        # Bot ilk kez mesaj silemediğinde kullanıcıyı bilgilendir
-        if "message can't be deleted" in error_message or "not an administrator" in error_message:
-            # Sadece bir kez uyarı göndermek için silme modunu kapatabiliriz.
-            context.chat_data['deleting_enabled'] = False 
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="❌ **HATA: Mesajları silemiyorum!**\n"
-                     "Lütfen botun grupta **Yönetici** olduğundan ve **mesaj silme yetkisine** sahip olduğundan emin olun."
-            )
+        msg = "📋 Botun bulunduğu gruplar:\n\n" + "\n".join(f"- {name}" for name in group_names)
+        sent_msg = await update.message.reply_text(msg)
 
-# ==============================================================================
-# 3. ANA FONKSİYON VE BOT BAŞLATMA
-# ==============================================================================
-
-def main() -> None:
-    """Botu başlatır ve işleyicileri kaydeder."""
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    # Komut İşleyicileri
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("delete_all", start_deleting))
-    application.add_handler(CommandHandler("stop_deleting", stop_deleting))
-    
-    # Mesaj İşleyicisi
-    # filters.ALL ve filters.UpdateType.MESSAGE: Gelen tüm mesajları (komutlar dahil) yakala
-    # update.edited_message'ı da silmek isterseniz MessageHandler'ı update_types=["message", "edited_message"] ile kullanabilirsiniz.
-    application.add_handler(MessageHandler(filters.ALL, delete_message))
-
-    # Botu başlat
-    logger.info("Mesaj Silme Botu başlatılıyor...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
-        # 4. Sonucu kullanıcıya gönderme
-        caption = (
-            f"Analiz Sonucu:\n"
-            f"Duygu: {face_data.get('dominant_emotion', 'Bilinmiyor').capitalize()}\n"
-            f"Yaş: {face_data.get('age', 'Bilinmiyor')}\n"
-            f"Cinsiyet: {face_data.get('dominant_gender', 'Bilinmiyor').capitalize()}\n"
-            f"Irk: {face_data.get('dominant_race', 'Bilinmiyor').capitalize()}\n\n"
-            f"Yüz Konumu (x, y, w, h): ({x}, {y}, {w}, {h})"
-        )
-        
-        await update.message.reply_text(caption)
+        # İsteğe bağlı: belirli bir süre sonra mesajı sil
+        try:
+            await sent_msg.delete()
+        except Exception as e:
+            error_message = str(e)
+            if "message can't be deleted" in error_message or "not an administrator" in error_message:
+                print("Uyarı: Bot mesajı silemedi (yetki eksikliği).")
+            else:
+                raise  # farklı bir hata varsa program durmasın
 
     except Exception as e:
-        logger.error(f"Fotoğraf analizinde beklenmeyen hata: {e}")
-        await update.message.reply_text(
-            "Analiz sırasında bir sorun oluştu. Lütfen net ve tek yüz içeren bir fotoğraf gönderin."
-        )
-    finally:
-        # 5. Geçici dosyayı sil
-        if downloaded_file_path and os.path.exists(downloaded_file_path):
-            os.remove(downloaded_file_path)
-            logger.info(f"Geçici dosya silindi: {downloaded_file_path}")
+        await update.message.reply_text(f"Bir hata oluştu: {e}")
 
-
-# VİDEO İşleme Fonksiyonu (Düzeltildi)
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Kullanıcıdan gelen videoyu işler (DeepFace genellikle videolar için uygun değildir,
-       bu yüzden sadece ilk karesini analiz etmeyi deneriz)."""
-    
-    # 1. Dosya boyutu kontrolü (DeepFace video için yavaş ve kaynak yoğundur)
-    if update.message.video.file_size > 20 * 1024 * 1024:  # Örn: 20MB sınırı
-        await update.message.reply_text("Video dosyası çok büyük (max 20MB). Lütfen daha küçük bir dosya gönderin.")
-        return
-
-    await update.message.reply_text("Video alındı. Analiz için video dosyasının indirilmesi ve işlenmesi zaman alabilir...")
-
-    downloaded_file_path = None
+if __name__ == "__main__":
+    app = ApplicationBuilder().token("BURAYA_TOKENİNİ_YAZ").build()
+    app.add_handler(CommandHandler("serverst", serverst))
+    app.run_polling()    downloaded_file_path = None
     try:
         # 2. Video dosyasını indir
         video_file_id = update.message.video.file_id
