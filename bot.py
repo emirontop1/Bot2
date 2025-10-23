@@ -1,108 +1,37 @@
-import logging
-from telegram import Update, Bot
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
-from telegram.constants import ChatType
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ==============================================================================
-# 1. TEMEL AYARLAR
-# ==============================================================================
+OWNER_USERNAME = "DincEMR"  # sadece owner kullanabilecek
 
-# Lütfen BURAYI kendi Telegram Bot token'ınızla değiştirin!
-BOT_TOKEN = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU" 
-
-# Loglama ayarları
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# ==============================================================================
-# 2. İŞLEYİCİ FONKSİYONLAR
-# ==============================================================================
-
-# /start komutunu işler (Grup ayarı hatırlatması)
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/start komutunu işler ve kullanım talimatlarını verir."""
-    
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        text = (
-            "⚠️ **Uyarı: Ben bir Silme Botu'yum!**\n\n"
-            "Beni bir gruba ekleyip yönetici yaparsanız, `delete_all` komutunu gönderene kadar "
-            "bu gruptaki **yeni gelen TÜM mesajları silerim**.\n\n"
-            "**Kullanım:**\n"
-            "1. Beni yönetici yapın ve **mesaj silme yetkisi** verin.\n"
-            "2. Silme işlemini başlatmak için: `/delete_all`\n"
-            "3. Durdurmak için: `/stop_deleting`"
-        )
-    else:
-        text = (
-            "Merhaba! Ben bir grup mesaj silme botuyum. Beni bir gruba yönetici olarak ekleyin ve "
-            "`/delete_all` komutuyla silme işlemini başlatın."
-        )
-
-    await update.message.reply_markdown_v2(text)
-
-# Silme işlemini başlatan komut
-async def start_deleting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Silme modunu etkinleştirir."""
-    chat_id = update.effective_chat.id
-    
-    if update.effective_chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        await update.message.reply_text("Bu komut sadece gruplarda kullanılabilir.")
+# /serverst komutu
+async def serverst(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.username != OWNER_USERNAME:
+        await update.message.reply_text("Bu komutu sadece owner kullanabilir.")
         return
 
-    # Botun silme modunda olduğunu kaydetmek için context.chat_data kullan
-    context.chat_data['deleting_enabled'] = True
-    logger.info(f"Grup {chat_id} için silme modu ETKİNLEŞTİRİLDİ.")
-    
-    await update.message.reply_text(
-        "🗑️ **Silme modu etkinleştirildi!**\n"
-        "Şu andan itibaren gruptaki tüm yeni mesajlar silinecektir.\n"
-        "Durdurmak için: /stop_deleting"
-    )
+    bot = context.bot
+    chat_list = await bot.get_updates()
+    group_names = set()
 
-# Silme işlemini durduran komut
-async def stop_deleting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Silme modunu devre dışı bırakır."""
-    chat_id = update.effective_chat.id
-    
-    context.chat_data['deleting_enabled'] = False
-    logger.info(f"Grup {chat_id} için silme modu DEVRE DIŞI BIRAKILDI.")
-    
-    await update.message.reply_text(
-        "✅ **Silme modu devre dışı bırakıldı!**\n"
-        "Gruptaki mesajlar artık silinmeyecektir.\n"
-        "Yeniden başlatmak için: /delete_all"
-    )
+    # Güncellemelerden botun bulunduğu grupları toplar
+    for update_item in chat_list:
+        chat = getattr(update_item.message, "chat", None)
+        if chat and chat.type in ["group", "supergroup"]:
+            group_names.add(chat.title)
 
+    if not group_names:
+        await update.message.reply_text("Bot şu anda hiçbir grupta değil.")
+        return
 
-# Tüm mesajları silen asıl işleyici
-async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Gelen mesajı silmeye çalışır."""
-    
-    chat_id = update.effective_chat.id
-    message_id = update.effective_message.message_id
-    
-    # Silme modu etkin mi?
-    if not context.chat_data.get('deleting_enabled', False):
-        return # Etkin değilse bir şey yapma
+    msg = "📋 Botun bulunduğu gruplar:\n\n" + "\n".join(f"- {name}" for name in group_names)
+    await update.message.reply_text(msg)
 
-    # Mesajı silmeye çalış
-    try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-        logger.info(f"Mesaj silindi: Chat={chat_id}, MsgID={message_id}")
-    except Exception as e:
-        # Mesajı silme yetkisi yoksa veya mesaj çok eskiyse hata verir
-        error_message = str(e)
-        logger.error(f"Mesaj silinirken hata oluştu: {error_message}")
-        
+# Botu başlat
+if __name__ == "__main__":
+    app = ApplicationBuilder().token("BURAYA_TOKENİNİ_YAZ").build()
+    app.add_handler(CommandHandler("serverst", serverst))
+    app.run_polling()        
         # Bot ilk kez mesaj silemediğinde kullanıcıyı bilgilendir
         if "message can't be deleted" in error_message or "not an administrator" in error_message:
             # Sadece bir kez uyarı göndermek için silme modunu kapatabiliriz.
