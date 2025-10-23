@@ -1,54 +1,47 @@
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes, ChatMemberHandler
+)
 
-OWNER_USERNAME = "DincEMR"  # sadece owner komutu çalıştırabilir
+OWNER_USERNAME = "DincEMR"
+joined_groups = set()  # botun bulunduğu grupları burada tutar
 
 
+# Bot bir gruba eklendiğinde tetiklenir
+async def track_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.chat
+    if chat and chat.type in ["group", "supergroup"]:
+        joined_groups.add(chat.title)
+
+
+# /serverst komutu
 async def serverst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # Sadece owner çalıştırabilir
     if user.username != OWNER_USERNAME:
         await update.message.reply_text("Bu komutu sadece owner kullanabilir.")
         return
 
-    bot = context.bot
+    if not joined_groups:
+        await update.message.reply_text("Bot şu anda hiçbir grupta değil.")
+        return
 
+    msg = "📋 Botun bulunduğu gruplar:\n\n" + "\n".join(f"- {name}" for name in joined_groups)
+    sent_msg = await update.message.reply_text(msg)
+
+    # Silme denemesi
     try:
-        # Güncellemeleri al
-        chat_list = await bot.get_updates()
-        group_names = set()
-
-        # Botun bulunduğu grupları bul
-        for update_item in chat_list:
-            chat = getattr(update_item.message, "chat", None)
-            if chat and chat.type in ["group", "supergroup"]:
-                group_names.add(chat.title)
-
-        # Hiç grup bulunmadıysa
-        if not group_names:
-            await update.message.reply_text("Bot şu anda hiçbir grupta değil.")
-            return
-
-        # Mesaj oluştur
-        msg = "📋 Botun bulunduğu gruplar:\n\n" + "\n".join(f"- {name}" for name in group_names)
-        sent_msg = await update.message.reply_text(msg)
-
-        # Mesajı silmeyi dene
-        try:
-            await sent_msg.delete()
-        except Exception as e:
-            error_message = str(e)
-            if "message can't be deleted" in error_message or "not an administrator" in error_message:
-                print("Uyarı: Bot mesajı silemedi (yetki eksikliği).")
-            else:
-                raise  # farklı bir hata varsa durdur
-
+        await sent_msg.delete()
     except Exception as e:
-        await update.message.reply_text(f"Bir hata oluştu: {e}")
+        err = str(e)
+        if "message can't be deleted" in err or "not an administrator" in err:
+            print("Uyarı: Mesaj silme yetkisi yok.")
+        else:
+            raise
 
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token("8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU").build()
+    app.add_handler(ChatMemberHandler(track_groups, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("serverst", serverst))
     app.run_polling()
