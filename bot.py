@@ -1,50 +1,41 @@
-import os
 import cv2
 import numpy as np
-import tempfile
+from deepface import DeepFace
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from io import BytesIO
 from PIL import Image
-import mediapipe as mp
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+import tempfile
 
-mp_face = mp.solutions.face_detection
-mp_drawing = mp.solutions.drawing_utils
-
-# ---------------- Fotoğraf ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Merhaba! Fotoğraf veya video gönder, yüzleri sansürleyebilirim 🎭"
+        "Merhaba! Fotoğraf veya video gönder, yüzleri blur ile sansürleyebilirim 🎭"
     )
 
+# ---------------- Fotoğraf ----------------
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     photo = msg.photo[-1]
     file = await photo.get_file()
 
     with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "photo.jpg")
+        path = f"{tmp}/photo.jpg"
         await file.download_to_drive(custom_path=path)
+
         img = cv2.imread(path)
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        faces = DeepFace.detectFace(img, detector_backend='opencv', enforce_detection=False, align=False)
 
-        with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
-            results = face_detection.process(img_rgb)
-            if not results.detections:
-                await msg.reply_text("Yüz bulunamadı 😢")
-                return
+        # Eğer tek yüz döndüyse faces array değilse arraya çevir
+        if faces.ndim == 1:
+            faces = [faces]
 
-            # Blur sansürleme
-            for detection in results.detections:
-                bbox = detection.location_data.relative_bounding_box
-                h, w, _ = img.shape
-                x1 = int(bbox.xmin * w)
-                y1 = int(bbox.ymin * h)
-                x2 = int((bbox.xmin + bbox.width) * w)
-                y2 = int((bbox.ymin + bbox.height) * h)
-                face = img[y1:y2, x1:x2]
-                face = cv2.GaussianBlur(face, (51, 51), 30)
-                img[y1:y2, x1:x2] = face
+        # Blur ile sansür
+        for face in faces:
+            x, y, w, h = face[0], face[1], face[2], face[3]
+            x, y, w, h = int(x), int(y), int(w), int(h)
+            roi = img[y:y+h, x:x+w]
+            roi = cv2.GaussianBlur(roi, (51,51), 30)
+            img[y:y+h, x:x+w] = roi
 
         bio = BytesIO()
         _, buf = cv2.imencode(".jpg", img)
@@ -63,9 +54,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text("Videoda yüzler sansürleniyor, lütfen bekle... ⏳")
 
     with tempfile.TemporaryDirectory() as tmp:
-        input_path = os.path.join(tmp, "input.mp4")
-        output_path = os.path.join(tmp, "output.mp4")
-
+        input_path = f"{tmp}/input.mp4"
+        output_path = f"{tmp}/output.mp4"
         file = await video.get_file()
         await file.download_to_drive(custom_path=input_path)
 
@@ -76,48 +66,20 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-        prev_faces = []
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        with mp_face.FaceDetection(model_selection=0, min_detection_confidence=0.5) as face_detection:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
+            # DeepFace ile yüz algılama
+            detections = DeepFace.extract_faces(frame, detector_backend='opencv', enforce_detection=False)
+            for face_data in detections:
+                x, y, w, h = face_data['facial_area'].values()
+                roi = frame[y:y+h, x:x+w]
+                roi = cv2.GaussianBlur(roi, (51,51), 30)
+                frame[y:y+h, x:x+w] = roi
 
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = face_detection.process(frame_rgb)
-
-                current_faces = []
-                if results.detections:
-                    for det in results.detections:
-                        bbox = det.location_data.relative_bounding_box
-                        x1 = int(bbox.xmin * width)
-                        y1 = int(bbox.ymin * height)
-                        x2 = int((bbox.xmin + bbox.width) * width)
-                        y2 = int((bbox.ymin + bbox.height) * height)
-                        current_faces.append((x1, y1, x2, y2))
-
-                # Smooth yüz takibi (moving average gibi)
-                if prev_faces:
-                    smoothed_faces = []
-                    for i, (x1, y1, x2, y2) in enumerate(current_faces):
-                        if i < len(prev_faces):
-                            px1, py1, px2, py2 = prev_faces[i]
-                            x1 = int(0.6*px1 + 0.4*x1)
-                            y1 = int(0.6*py1 + 0.4*y1)
-                            x2 = int(0.6*px2 + 0.4*x2)
-                            y2 = int(0.6*py2 + 0.4*y2)
-                        smoothed_faces.append((x1, y1, x2, y2))
-                    current_faces = smoothed_faces
-
-                for (x1, y1, x2, y2) in current_faces:
-                    face = frame[y1:y2, x1:x2]
-                    face = cv2.GaussianBlur(face, (51, 51), 30)
-                    frame[y1:y2, x1:x2] = face
-
-                prev_faces = current_faces
-
-                out.write(frame)
+            out.write(frame)
 
         cap.release()
         out.release()
@@ -126,17 +88,12 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_video(video=f, caption="Yüzler sansürlendi 🎭")
 
 # ---------------- Bot ----------------
-async def error_handler(update, context):
-    print(f"Hata: {context.error}")
-
 def main():
     token = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU"
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    app.add_error_handler(error_handler)
-
     print("Bot çalışıyor...")
     app.run_polling()
 
