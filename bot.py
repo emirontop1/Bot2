@@ -1,50 +1,37 @@
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
-import json
-import os
+from telegram.ext import Updater, CommandHandler, CallbackContext
 
-TOKEN = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU"
-GROUPS_FILE = "groups.json"
+# Owner ID (sadece owner erişebilir)
+OWNER_ID = 792398679  # Telegram ID'ni buraya koy
 
-# JSON dosyasını yükleme
-def load_groups():
-    if not os.path.exists(GROUPS_FILE):
-        return set()
-    try:
-        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return set(data)
-            return set()
-    except json.JSONDecodeError:
-        return set()
+# /serv komutu
+def serv_command(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        update.message.reply_text("Bu komut sadece owner için.")
+        return
 
-# JSON dosyasına kaydetme
-def save_groups(groups):
-    with open(GROUPS_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(groups), f, indent=4)
+    chat = update.effective_chat
+    info = (
+        f"Chat Title: {chat.title}\n"
+        f"Chat ID: {chat.id}\n"
+        f"Type: {chat.type}\n"
+        f"Members Count: {chat.get_members_count() if hasattr(chat, 'get_members_count') else 'Bilinmiyor'}"
+    )
+    update.message.reply_text(info)
 
-groups = load_groups()
+def main():
+    # TOKEN'ı .env dosyasından veya gizli config'ten al
+    import os
+    TOKEN = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU"
 
-# Komut: /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    groups.add(chat_id)
-    save_groups(groups)
-    await update.message.reply_text("Merhaba! Bot aktif ve gruba eklendin.")
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
 
-# Komut: /groups
-async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Botun bulunduğu gruplar: {len(groups)}")
+    dp.add_handler(CommandHandler("serv", serv_command))
 
-# Mesaj geldiğinde
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Mesaj aldım: {update.message.text}")
+    updater.start_polling()
+    updater.idle()
 
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("groups", list_groups))
-app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo))
-
-app.run_polling()
+if __name__ == "__main__":
+    main()
