@@ -1,9 +1,1 @@
-tensorflow
-deepface
-opencv-python
-numpy
-Pillow
-Flask
-gunicorn
-tf-keras
 python-telegram-bot
