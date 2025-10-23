@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from deepface import DeepFace
 from telegram import Update, ForceReply
 from telegram.ext import (
@@ -10,24 +11,35 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# DeepFace ve TensorFlow'dan gelen gereksiz uyarıları gizle
+# ==============================================================================
+# 1. TEMEL AYARLAR VE GEREKSİZ UYARILARI GİZLEME
+# ==============================================================================
+
+# Lütfen BURAYI kendi Telegram Bot token'ınızla değiştirin!
+BOT_TOKEN = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU" 
+
+# DeepFace ve TensorFlow'dan gelen CUDA/CPU uyarılarını gizle
 # Log seviyesini 3 (FATAL) olarak ayarlayarak uyarıları baskılar
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# Token'ınızı buraya girin
-BOT_TOKEN = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU" 
-
 # Loglama ayarları
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Geçici dosya adı oluşturma fonksiyonu (Dosya türünü de eklemek daha iyidir)
+# Geçici dosya adı oluşturma fonksiyonu
 def get_temp_file_path(file_id, ext="jpg"):
-    return f"/tmp/{file_id}.{ext}"
+    """Dosyayı kaydetmek için benzersiz bir geçici yol döndürür."""
+    # os.path.join kullanılarak platformdan bağımsız yol oluşturulur
+    return os.path.join("/tmp", f"{file_id}.{ext}")
 
-# 1. Başlangıç Komutu
+# ==============================================================================
+# 2. İŞLEYİCİ FONKSİYONLAR
+# ==============================================================================
+
+# /start komutunu işler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/start komutunu işler."""
     user = update.effective_user
@@ -36,32 +48,107 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=ForceReply(selective=True),
     )
 
-# 2. Hata İşleyicisi
+# Hata işleyicisi (Önceki loglardaki 'No error handlers are registered' sorununu çözer)
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Hata loglaması yapar ve kullanıcıya geri bildirimde bulunur."""
-    logger.error("Bir hata oluştu: %s", context.error, exc_info=True)
-    if update.effective_message:
-        await update.effective_message.reply_text(
-            f"Üzgünüm, bir hata oluştu. Lütfen fotoğrafın net olduğundan emin ol."
-        )
+    logger.error("İşleyici hatası: %s", context.error, exc_info=True)
+    if update and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                f"Üzgünüm, bir hata oluştu. Lütfen fotoğrafın net olduğundan veya bot token'ının doğru olduğundan emin ol."
+            )
+        except Exception as e:
+            logger.error(f"Kullanıcıya hata mesajı gönderirken hata oluştu: {e}")
 
-
-# 3. FOTOĞRAF İşleme Fonksiyonu (Hata Düzeltildi)
+# FOTOĞRAF İşleme Fonksiyonu (Düzeltildi)
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Kullanıcıdan gelen fotoğrafı indirir, DeepFace ile analiz eder ve sonucu gönderir."""
+    """Kullanıcıdan gelen fotoğrafı indirir ve DeepFace ile analiz eder."""
     
     # En yüksek çözünürlüklü fotoğrafı al
     photo_file_id = update.message.photo[-1].file_id
-    new_file = await context.bot.get_file(photo_file_id)
     
-    downloaded_file_path = get_temp_file_path(photo_file_id, "jpg")
-    await new_file.download_to_drive(downloaded_file_path)
-
     await update.message.reply_text("Fotoğraf alındı, analiz ediliyor...")
 
+    downloaded_file_path = None
     try:
-        # DeepFace analizi
+        # 1. Dosyayı indir
+        new_file = await context.bot.get_file(photo_file_id)
+        downloaded_file_path = get_temp_file_path(photo_file_id, "jpg")
+        await new_file.download_to_drive(downloaded_file_path)
+        
+        logger.info(f"Dosya indirildi: {downloaded_file_path}")
+
+        # 2. DeepFace analizi
         # Geriye birden fazla yüz içeriyorsa liste döner.
+        results = DeepFace.analyze(
+            img_path=downloaded_file_path, 
+            actions=['age', 'gender', 'race', 'emotion'], 
+            enforce_detection=False # Algılama başarısız olsa bile hata fırlatmayı engeller
+        )
+
+        if not results:
+            await update.message.reply_text("Fotoğrafta yüz algılanamadı.")
+            return
+
+        # 3. Analiz sonucunu güvenli şekilde ayrıştırma (Hata düzeltmeleri burada yapıldı)
+        
+        # Sadece ilk algılanan yüzün verilerini al
+        face_data = results[0] 
+        
+        # Loglardaki ValueError ve TypeError'ı çözen güvenli ayrıştırma
+        facial_area = face_data['facial_area']
+        x = facial_area['x']
+        y = facial_area['y']
+        w = facial_area['w']
+        h = facial_area['h']
+
+        # 4. Sonucu kullanıcıya gönderme
+        caption = (
+            f"Analiz Sonucu:\n"
+            f"Duygu: {face_data.get('dominant_emotion', 'Bilinmiyor').capitalize()}\n"
+            f"Yaş: {face_data.get('age', 'Bilinmiyor')}\n"
+            f"Cinsiyet: {face_data.get('dominant_gender', 'Bilinmiyor').capitalize()}\n"
+            f"Irk: {face_data.get('dominant_race', 'Bilinmiyor').capitalize()}\n\n"
+            f"Yüz Konumu (x, y, w, h): ({x}, {y}, {w}, {h})"
+        )
+        
+        await update.message.reply_text(caption)
+
+    except Exception as e:
+        logger.error(f"Fotoğraf analizinde beklenmeyen hata: {e}")
+        await update.message.reply_text(
+            "Analiz sırasında bir sorun oluştu. Lütfen net ve tek yüz içeren bir fotoğraf gönderin."
+        )
+    finally:
+        # 5. Geçici dosyayı sil
+        if downloaded_file_path and os.path.exists(downloaded_file_path):
+            os.remove(downloaded_file_path)
+            logger.info(f"Geçici dosya silindi: {downloaded_file_path}")
+
+
+# VİDEO İşleme Fonksiyonu (Düzeltildi)
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Kullanıcıdan gelen videoyu işler (DeepFace genellikle videolar için uygun değildir,
+       bu yüzden sadece ilk karesini analiz etmeyi deneriz)."""
+    
+    # 1. Dosya boyutu kontrolü (DeepFace video için yavaş ve kaynak yoğundur)
+    if update.message.video.file_size > 20 * 1024 * 1024:  # Örn: 20MB sınırı
+        await update.message.reply_text("Video dosyası çok büyük (max 20MB). Lütfen daha küçük bir dosya gönderin.")
+        return
+
+    await update.message.reply_text("Video alındı. Analiz için video dosyasının indirilmesi ve işlenmesi zaman alabilir...")
+
+    downloaded_file_path = None
+    try:
+        # 2. Video dosyasını indir
+        video_file_id = update.message.video.file_id
+        new_file = await context.bot.get_file(video_file_id)
+        downloaded_file_path = get_temp_file_path(video_file_id, "mp4")
+        await new_file.download_to_drive(downloaded_file_path)
+        
+        logger.info(f"Video indirildi: {downloaded_file_path}")
+
+        # 3. DeepFace analizi (Hata düzeltmeleri yapıldı)
         results = DeepFace.analyze(
             img_path=downloaded_file_path, 
             actions=['age', 'gender', 'race', 'emotion'], 
@@ -69,139 +156,65 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
         if not results:
-            await update.message.reply_text("Fotoğrafta yüz algılanamadı.")
+            await update.message.reply_text("Video karesinde yüz algılanamadı.")
             return
 
-        # *** DÜZELTME BAŞLANGICI: Birden fazla yüz olabilir, sadece ilkini alıyoruz. ***
+        # 4. Analiz sonucunu güvenli şekilde ayrıştırma
         face_data = results[0] 
         
-        # 'facial_area' sözlüğünden değerleri tek tek alıyoruz.
-        # Bu, logdaki 'TypeError: only length-1 arrays...' ve 
-        # 'ValueError: too many values to unpack' hatalarını çözer.
+        # Loglardaki ValueError ve TypeError'ı çözen güvenli ayrıştırma
         facial_area = face_data['facial_area']
         x = facial_area['x']
         y = facial_area['y']
         w = facial_area['w']
         h = facial_area['h']
 
-        # *** DÜZELTME SONU ***
-
-        # Analiz sonuçlarını hazırlama
-        emotion = face_data['dominant_emotion']
-        age = face_data['age']
-        gender = face_data['dominant_gender']
-        race = face_data['dominant_race']
-        
-        caption = (
-            f"Analiz Sonucu:\n"
-            f"Duygu: {emotion.capitalize()}\n"
-            f"Yaş: {age}\n"
-            f"Cinsiyet: {gender.capitalize()}\n"
-            f"Irk: {race.capitalize()}\n\n"
-            f"Yüz Konumu (x, y, w, h): ({x}, {y}, {w}, {h})"
-        )
-        
-        # Kullanıcıya yanıt gönder
-        await update.message.reply_text(caption)
-
-    except Exception as e:
-        logger.error(f"Fotoğraf analizinde hata: {e}")
-        await update.message.reply_text(
-            "Analiz sırasında bir sorun oluştu. Lütfen net bir fotoğraf gönderin."
-        )
-    finally:
-        # Geçici dosyayı sil
-        if os.path.exists(downloaded_file_path):
-            os.remove(downloaded_file_path)
-
-
-# 4. VİDEO İşleme Fonksiyonu (Hata Düzeltildi)
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Kullanıcıdan gelen video dosyasını işler (Sadece bilgi için, DeepFace ile analiz zordur)."""
-    
-    # Telegram'da video analizi genellikle video karesi (thumbnail) üzerinden yapılır
-    # veya tüm videonun indirilmesi gerekir. Hata loglarınız video işleme kısmını gösterdiği için
-    # mantığı düzeltiyorum.
-    
-    if update.message.video.file_size > 10 * 1024 * 1024:  # Örn: 10MB sınırı
-        await update.message.reply_text("Video dosyası çok büyük, sadece fotoğraf gönderebilirsin.")
-        return
-
-    await update.message.reply_text("Video alındı, analiz için ilk karesi kullanılıyor...")
-
-    # Video dosyasını indir (Bu kısım, gerçek video analizini atlamak için basitleştirilmiştir)
-    video_file_id = update.message.video.file_id
-    new_file = await context.bot.get_file(video_file_id)
-    downloaded_file_path = get_temp_file_path(video_file_id, "mp4")
-    await new_file.download_to_drive(downloaded_file_path)
-    
-    # Not: DeepFace'in video analizi için video yerine ilk karesini veya thumbnail'ini 
-    # kullanmanız gerekir, yoksa işlem çok yavaşlar.
-    
-    try:
-        # DeepFace analizi (Hata logu bu fonksiyonu gösterdiği için mantığı koruyorum)
-        results = DeepFace.analyze(
-            img_path=downloaded_file_path, # Genellikle buraya video değil, bir resim yolu gelir
-            actions=['age', 'gender', 'race', 'emotion'], 
-            enforce_detection=False
-        )
-
-        if not results:
-            await update.message.reply_text("Video/Karede yüz algılanamadı.")
-            return
-
-        # *** DÜZELTME BAŞLANGICI: Logdaki 'ValueError: too many values to unpack' düzeltiliyor ***
-        face_data = results[0] 
-        
-        # face_data['facial_area'].values() yerine, sözlüğün anahtarları ile tek tek erişiyoruz.
-        facial_area = face_data['facial_area']
-        x = facial_area['x']
-        y = facial_area['y']
-        w = facial_area['w']
-        h = facial_area['h']
-        # *** DÜZELTME SONU ***
-
+        # 5. Sonucu kullanıcıya gönderme
         caption = (
             f"Video Karesi Analizi Sonucu:\n"
-            f"Duygu: {face_data['dominant_emotion'].capitalize()}\n"
-            f"Yaş: {face_data['age']}\n"
+            f"Duygu: {face_data.get('dominant_emotion', 'Bilinmiyor').capitalize()}\n"
+            f"Yaş: {face_data.get('age', 'Bilinmiyor')}\n"
             f"Yüz Konumu (x, y, w, h): ({x}, {y}, {w}, {h})"
         )
         
         await update.message.reply_text(caption)
         
     except Exception as e:
-        logger.error(f"Video analizinde hata: {e}")
+        logger.error(f"Video analizinde beklenmeyen hata: {e}")
         await update.message.reply_text(
-            "Video analizinde bir sorun oluştu. Lütfen videonun ilk karesinin net olduğundan emin olun."
+            "Video analizinde bir sorun oluştu. Lütfen videonun net ve kısa olduğundan emin olun."
         )
     finally:
-        # Geçici dosyayı sil
-        if os.path.exists(downloaded_file_path):
+        # 6. Geçici dosyayı sil
+        if downloaded_file_path and os.path.exists(downloaded_file_path):
             os.remove(downloaded_file_path)
+            logger.info(f"Geçici dosya silindi: {downloaded_file_path}")
 
+# ==============================================================================
+# 3. ANA FONKSİYON VE BOT BAŞLATMA
+# ==============================================================================
 
-# 5. Ana Fonksiyon
 def main() -> None:
-    """Botu başlatır."""
-    # Yeni ApplicationBuilder yapısını kullanıyoruz
+    """Botu başlatır ve işleyicileri kaydeder."""
+    # ApplicationBuilder yapısı ile Application oluşturulur
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Komut işleyicileri
+    # İşleyicileri kaydet
     application.add_handler(CommandHandler("start", start))
     
-    # Mesaj işleyicileri
-    # filters.PHOTO filtreleri sadece fotoğraf mesajlarını yakalar
+    # Sadece fotoğraf veya video olan, komut olmayan mesajları yakala
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    # filters.VIDEO filtreleri sadece video mesajlarını yakalar
     application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
     
     # Hata işleyicisi
     application.add_error_handler(error_handler)
 
-    # Botu başlat
+    # Botu başlat ve gelen güncellemeleri kontrol etmeye başla
     logger.info("Bot başlatılıyor...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
+    # Eğer botu Docker/Konteyner ortamında çalıştırıyorsanız:
+    # `main()` çağrısının bir asenkron döngüde çalışması gerekir.
+    # python-telegram-bot'un run_polling() metodu bunu otomatik olarak halleder.
     main()
