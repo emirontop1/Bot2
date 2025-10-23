@@ -3,4 +3,4 @@ opencv-python-headless>=4.7.0
 Pillow>=9.0.0
 numpy>=1.23.0
 requests>=2.28.0
-mediapipe>=1.25.0
+deepface>=0.0.93
