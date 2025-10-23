@@ -1,8 +1,5 @@
-import os
 import logging
-import asyncio
-from deepface import DeepFace
-from telegram import Update, ForceReply
+from telegram import Update, Bot
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -10,17 +7,14 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from telegram.constants import ChatType
 
 # ==============================================================================
-# 1. TEMEL AYARLAR VE GEREKSİZ UYARILARI GİZLEME
+# 1. TEMEL AYARLAR
 # ==============================================================================
 
 # Lütfen BURAYI kendi Telegram Bot token'ınızla değiştirin!
 BOT_TOKEN = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU" 
-
-# DeepFace ve TensorFlow'dan gelen CUDA/CPU uyarılarını gizle
-# Log seviyesini 3 (FATAL) olarak ayarlayarak uyarıları baskılar
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # Loglama ayarları
 logging.basicConfig(
@@ -29,79 +23,120 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Geçici dosya adı oluşturma fonksiyonu
-def get_temp_file_path(file_id, ext="jpg"):
-    """Dosyayı kaydetmek için benzersiz bir geçici yol döndürür."""
-    # os.path.join kullanılarak platformdan bağımsız yol oluşturulur
-    return os.path.join("/tmp", f"{file_id}.{ext}")
-
 # ==============================================================================
 # 2. İŞLEYİCİ FONKSİYONLAR
 # ==============================================================================
 
-# /start komutunu işler
+# /start komutunu işler (Grup ayarı hatırlatması)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/start komutunu işler."""
-    user = update.effective_user
-    await update.message.reply_html(
-        f"Merhaba {user.mention_html()}! Fotoğraf veya video gönder, yüz analizi yapayım.",
-        reply_markup=ForceReply(selective=True),
-    )
-
-# Hata işleyicisi (Önceki loglardaki 'No error handlers are registered' sorununu çözer)
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Hata loglaması yapar ve kullanıcıya geri bildirimde bulunur."""
-    logger.error("İşleyici hatası: %s", context.error, exc_info=True)
-    if update and update.effective_message:
-        try:
-            await update.effective_message.reply_text(
-                f"Üzgünüm, bir hata oluştu. Lütfen fotoğrafın net olduğundan veya bot token'ının doğru olduğundan emin ol."
-            )
-        except Exception as e:
-            logger.error(f"Kullanıcıya hata mesajı gönderirken hata oluştu: {e}")
-
-# FOTOĞRAF İşleme Fonksiyonu (Düzeltildi)
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Kullanıcıdan gelen fotoğrafı indirir ve DeepFace ile analiz eder."""
+    """/start komutunu işler ve kullanım talimatlarını verir."""
     
-    # En yüksek çözünürlüklü fotoğrafı al
-    photo_file_id = update.message.photo[-1].file_id
-    
-    await update.message.reply_text("Fotoğraf alındı, analiz ediliyor...")
-
-    downloaded_file_path = None
-    try:
-        # 1. Dosyayı indir
-        new_file = await context.bot.get_file(photo_file_id)
-        downloaded_file_path = get_temp_file_path(photo_file_id, "jpg")
-        await new_file.download_to_drive(downloaded_file_path)
-        
-        logger.info(f"Dosya indirildi: {downloaded_file_path}")
-
-        # 2. DeepFace analizi
-        # Geriye birden fazla yüz içeriyorsa liste döner.
-        results = DeepFace.analyze(
-            img_path=downloaded_file_path, 
-            actions=['age', 'gender', 'race', 'emotion'], 
-            enforce_detection=False # Algılama başarısız olsa bile hata fırlatmayı engeller
+    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        text = (
+            "⚠️ **Uyarı: Ben bir Silme Botu'yum!**\n\n"
+            "Beni bir gruba ekleyip yönetici yaparsanız, `delete_all` komutunu gönderene kadar "
+            "bu gruptaki **yeni gelen TÜM mesajları silerim**.\n\n"
+            "**Kullanım:**\n"
+            "1. Beni yönetici yapın ve **mesaj silme yetkisi** verin.\n"
+            "2. Silme işlemini başlatmak için: `/delete_all`\n"
+            "3. Durdurmak için: `/stop_deleting`"
+        )
+    else:
+        text = (
+            "Merhaba! Ben bir grup mesaj silme botuyum. Beni bir gruba yönetici olarak ekleyin ve "
+            "`/delete_all` komutuyla silme işlemini başlatın."
         )
 
-        if not results:
-            await update.message.reply_text("Fotoğrafta yüz algılanamadı.")
-            return
+    await update.message.reply_markdown_v2(text)
 
-        # 3. Analiz sonucunu güvenli şekilde ayrıştırma (Hata düzeltmeleri burada yapıldı)
-        
-        # Sadece ilk algılanan yüzün verilerini al
-        face_data = results[0] 
-        
-        # Loglardaki ValueError ve TypeError'ı çözen güvenli ayrıştırma
-        facial_area = face_data['facial_area']
-        x = facial_area['x']
-        y = facial_area['y']
-        w = facial_area['w']
-        h = facial_area['h']
+# Silme işlemini başlatan komut
+async def start_deleting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Silme modunu etkinleştirir."""
+    chat_id = update.effective_chat.id
+    
+    if update.effective_chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        await update.message.reply_text("Bu komut sadece gruplarda kullanılabilir.")
+        return
 
+    # Botun silme modunda olduğunu kaydetmek için context.chat_data kullan
+    context.chat_data['deleting_enabled'] = True
+    logger.info(f"Grup {chat_id} için silme modu ETKİNLEŞTİRİLDİ.")
+    
+    await update.message.reply_text(
+        "🗑️ **Silme modu etkinleştirildi!**\n"
+        "Şu andan itibaren gruptaki tüm yeni mesajlar silinecektir.\n"
+        "Durdurmak için: /stop_deleting"
+    )
+
+# Silme işlemini durduran komut
+async def stop_deleting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Silme modunu devre dışı bırakır."""
+    chat_id = update.effective_chat.id
+    
+    context.chat_data['deleting_enabled'] = False
+    logger.info(f"Grup {chat_id} için silme modu DEVRE DIŞI BIRAKILDI.")
+    
+    await update.message.reply_text(
+        "✅ **Silme modu devre dışı bırakıldı!**\n"
+        "Gruptaki mesajlar artık silinmeyecektir.\n"
+        "Yeniden başlatmak için: /delete_all"
+    )
+
+
+# Tüm mesajları silen asıl işleyici
+async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gelen mesajı silmeye çalışır."""
+    
+    chat_id = update.effective_chat.id
+    message_id = update.effective_message.message_id
+    
+    # Silme modu etkin mi?
+    if not context.chat_data.get('deleting_enabled', False):
+        return # Etkin değilse bir şey yapma
+
+    # Mesajı silmeye çalış
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        logger.info(f"Mesaj silindi: Chat={chat_id}, MsgID={message_id}")
+    except Exception as e:
+        # Mesajı silme yetkisi yoksa veya mesaj çok eskiyse hata verir
+        error_message = str(e)
+        logger.error(f"Mesaj silinirken hata oluştu: {error_message}")
+        
+        # Bot ilk kez mesaj silemediğinde kullanıcıyı bilgilendir
+        if "message can't be deleted" in error_message or "not an administrator" in error_message:
+            # Sadece bir kez uyarı göndermek için silme modunu kapatabiliriz.
+            context.chat_data['deleting_enabled'] = False 
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ **HATA: Mesajları silemiyorum!**\n"
+                     "Lütfen botun grupta **Yönetici** olduğundan ve **mesaj silme yetkisine** sahip olduğundan emin olun."
+            )
+
+# ==============================================================================
+# 3. ANA FONKSİYON VE BOT BAŞLATMA
+# ==============================================================================
+
+def main() -> None:
+    """Botu başlatır ve işleyicileri kaydeder."""
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Komut İşleyicileri
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("delete_all", start_deleting))
+    application.add_handler(CommandHandler("stop_deleting", stop_deleting))
+    
+    # Mesaj İşleyicisi
+    # filters.ALL ve filters.UpdateType.MESSAGE: Gelen tüm mesajları (komutlar dahil) yakala
+    # update.edited_message'ı da silmek isterseniz MessageHandler'ı update_types=["message", "edited_message"] ile kullanabilirsiniz.
+    application.add_handler(MessageHandler(filters.ALL, delete_message))
+
+    # Botu başlat
+    logger.info("Mesaj Silme Botu başlatılıyor...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
         # 4. Sonucu kullanıcıya gönderme
         caption = (
             f"Analiz Sonucu:\n"
