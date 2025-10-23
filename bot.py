@@ -29,7 +29,7 @@ async def serverst(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Botu başlat
 if __name__ == "__main__":
-    app = ApplicationBuilder().token("BURAYA_TOKENİNİ_YAZ").build()
+    app = ApplicationBuilder().token("8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU").build()
     app.add_handler(CommandHandler("serverst", serverst))
     app.run_polling()        
         # Bot ilk kez mesaj silemediğinde kullanıcıyı bilgilendir
