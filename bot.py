@@ -1,48 +1,78 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from deepface import DeepFace
-import io
+# bot.py
+# Telegram botu: fotoğrafı alır ve piksel bazlı Lua GUI koduna çevirir.
+# Kullanım:
+# 1) BOT_TOKEN kısmına kendi token'ını yaz.
+# 2) pip install -r requirements.txt
+# 3) python bot.py
+# 4) Telegram'dan bota fotoğraf gönder. Geriye output.lua dosyası döner.
+
+from telegram import Update, Bot
+from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
+from io import BytesIO
 from PIL import Image
-import os
 
-TELEGRAM_TOKEN = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU"
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("Environment variable TELEGRAM_TOKEN gerekli.")
+BOT_TOKEN = "8350124542:AAHwsh0LksJAZOW-hHTY1BTu5i8-XKGFn18"
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not update.message.photo:
-            await update.message.reply_text("Fotoğraf göndermedim.")
-            return
+def rgb_to_lua_color(r, g, b):
+    return f"Color3.fromRGB({r}, {g}, {b})"
 
-        # Fotoğrafı al
-        file = await update.message.photo[-1].get_file()
-        bio = io.BytesIO()
-        await file.download(out=bio)
-        bio.seek(0)
-        pil_img = Image.open(bio).convert("RGB")
-        
-        # DeepFace analiz
-        analysis = DeepFace.analyze(np.array(pil_img), actions=["age", "gender", "emotion", "race"], enforce_detection=False)
-        
-        reply = f"""
-Yaş: {analysis['age']}
-Cinsiyet: {analysis['gender']}
-Duygu: {analysis['dominant_emotion']}
-Irk: {analysis['dominant_race']}
-"""
-        await update.message.reply_text(reply.strip())
-    except Exception as e:
-        await update.message.reply_text(f"Hata: {e}")
+def image_to_lua(img: Image.Image, scale: int = 1):
+    w, h = img.size
+    pixels = img.load()
 
-async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Fotoğraf gönderirsen yüz analizi yapabilirim.")
+    lines = []
+    lines.append('local screenGui = Instance.new("ScreenGui")')
+    lines.append('screenGui.Name = "GeneratedImage"')
+    lines.append('screenGui.ResetOnSpawn = false')
+    lines.append('screenGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")')
+
+    lines.append('')
+
+    for y in range(h):
+        for x in range(w):
+            r, g, b, *a = pixels[x, y]
+            alpha = a[0] if a else 255
+            if alpha < 5:  # saydam pikseli atla
+                continue
+            color = rgb_to_lua_color(r, g, b)
+            lines.append('do')
+            lines.append('    local f = Instance.new("Frame")')
+            lines.append(f'    f.Size = UDim2.new(0, {scale}, 0, {scale})')
+            lines.append(f'    f.Position = UDim2.new(0, {x * scale}, 0, {y * scale})')
+            lines.append(f'    f.BackgroundColor3 = {color}')
+            lines.append('    f.BorderSizePixel = 0')
+            lines.append('    f.Parent = screenGui')
+            lines.append('end')
+
+    return "\n".join(lines)
+
+def handle_photo(update: Update, context: CallbackContext):
+    photo = update.message.photo[-1]
+    file = photo.get_file()
+    bio = BytesIO()
+    file.download(out=bio)
+    bio.seek(0)
+
+    img = Image.open(bio).convert("RGBA")
+    max_side = 64  # kalite + boyut dengesi
+    img.thumbnail((max_side, max_side))
+
+    lua_code = image_to_lua(img, scale=2)
+
+    with open("output.lua", "w", encoding="utf-8") as f:
+        f.write(lua_code)
+
+    with open("output.lua", "rb") as f:
+        context.bot.send_document(chat_id=update.effective_chat.id, document=f, filename="output.lua")
+
+    update.message.reply_text(f"Görsel başarıyla Lua GUI koduna dönüştürüldü ({img.size[0]}x{img.size[1]}).")
 
 def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(~filters.PHOTO, handle_other))
-    app.run_polling()
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
