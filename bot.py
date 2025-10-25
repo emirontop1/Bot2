@@ -1,13 +1,5 @@
-# bot.py
-# Telegram botu: fotoğrafı alır ve piksel bazlı Lua GUI koduna çevirir.
-# Kullanım:
-# 1) BOT_TOKEN kısmına kendi token'ını yaz.
-# 2) pip install -r requirements.txt
-# 3) python bot.py
-# 4) Telegram'dan bota fotoğraf gönder. Geriye output.lua dosyası döner.
-
-from telegram import Update, Bot
-from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from io import BytesIO
 from PIL import Image
 
@@ -20,19 +12,19 @@ def image_to_lua(img: Image.Image, scale: int = 1):
     w, h = img.size
     pixels = img.load()
 
-    lines = []
-    lines.append('local screenGui = Instance.new("ScreenGui")')
-    lines.append('screenGui.Name = "GeneratedImage"')
-    lines.append('screenGui.ResetOnSpawn = false')
-    lines.append('screenGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")')
-
-    lines.append('')
+    lines = [
+        'local screenGui = Instance.new("ScreenGui")',
+        'screenGui.Name = "GeneratedImage"',
+        'screenGui.ResetOnSpawn = false',
+        'screenGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")',
+        ''
+    ]
 
     for y in range(h):
         for x in range(w):
             r, g, b, *a = pixels[x, y]
             alpha = a[0] if a else 255
-            if alpha < 5:  # saydam pikseli atla
+            if alpha < 5:
                 continue
             color = rgb_to_lua_color(r, g, b)
             lines.append('do')
@@ -46,33 +38,31 @@ def image_to_lua(img: Image.Image, scale: int = 1):
 
     return "\n".join(lines)
 
-def handle_photo(update: Update, context: CallbackContext):
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]
-    file = photo.get_file()
+    file = await photo.get_file()
     bio = BytesIO()
-    file.download(out=bio)
+    await file.download_to_memory(out=bio)
     bio.seek(0)
 
     img = Image.open(bio).convert("RGBA")
-    max_side = 64  # kalite + boyut dengesi
-    img.thumbnail((max_side, max_side))
-
+    img.thumbnail((64, 64))
     lua_code = image_to_lua(img, scale=2)
 
     with open("output.lua", "w", encoding="utf-8") as f:
         f.write(lua_code)
 
-    with open("output.lua", "rb") as f:
-        context.bot.send_document(chat_id=update.effective_chat.id, document=f, filename="output.lua")
+    await update.message.reply_document(
+        document=open("output.lua", "rb"),
+        filename="output.lua"
+    )
 
-    update.message.reply_text(f"Görsel başarıyla Lua GUI koduna dönüştürüldü ({img.size[0]}x{img.size[1]}).")
+    await update.message.reply_text(
+        f"Görsel dönüştürüldü: {img.size[0]}x{img.size[1]}"
+    )
 
-def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
-    updater.start_polling()
-    updater.idle()
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
 if __name__ == "__main__":
-    main()
+    app.run_polling()
