@@ -1,2 +1,2 @@
-python-telegram-bot
-selenium
+python-telegram-bot==20.6
+Pillow==10.0.0
