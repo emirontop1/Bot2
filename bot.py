@@ -1,116 +1,111 @@
-import telegram
-from telegram.ext import Application, CommandHandler, MessageHandler 
 import logging
 import os
-import re 
-import math # Matematik fonksiyonları için
+from telegram import Update, Document
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service as ChromeService
 
-# Günlüklemeyi ayarlayın
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
+# --- AYARLAR ---
+# Token'ı kodun içinden değil, Railway ortam değişkenlerinden al
+TOKEN = "8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU"
+if not TOKEN:
+    raise ValueError("Lütfen 'TOKEN' adında bir ortam değişkeni ayarlayın!")
+# -----------------
 
+# Hata ayıklama için loglamayı etkinleştir
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Telegram Bot Token
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU')
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/start komutunu yanıtlar."""
+    await update.message.reply_text(
+        "Merhaba! Render edilmesini istediğiniz bir .html veya .htm dosyasını bana gönderin. "
+        "Dosyanın ekran görüntüsünü size göndereceğim."
+    )
 
-# --- Yardımcı Fonksiyonlar ---
-
-def safe_evaluate_expression(expression):
-    """
-    Kullanıcı tarafından verilen ifadeyi güvenli bir şekilde değerlendirir
-    ve sonucu adım adım açıklar.
-    """
-    # İfadede izin verilen karakterler: sayılar, +, -, *, /, (, ), ., ve math fonksiyonları
-    # Bu, komut enjeksiyonunu önlemek için hayati öneme sahiptir.
-    allowed_chars = r'[0-9\.\+\-\*/\(\)\s]|sqrt|pow|sin|cos|tan|log'
-    if not re.fullmatch(allowed_chars, expression.replace(' ', '')):
-        return "Geçersiz ifade.", "Lütfen sadece sayıları ve temel işlemleri (\\+, \\-, \\*, \\/) kullanın. Fonksiyonlar: sqrt(), pow(x, y)."
-
-    # math kütüphanesindeki fonksiyonları kullanıma açan güvenli kapsam
-    safe_globals = {"__builtins__": None}
-    safe_locals = {"sqrt": math.sqrt, "pow": math.pow, "sin": math.sin, "cos": math.cos, "tan": math.tan, "log": math.log}
+async def setup_selenium_driver():
+    """Railway ortamı için optimize edilmiş Selenium WebDriver'ı kurar."""
+    options = ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox") # Konteynerde root olarak çalışmak için GEREKLİ
+    options.add_argument("--disable-dev-shm-usage") # Paylaşılan bellek sorunlarını önler
+    options.add_argument("--disable-gpu") # GPU'ya gerek yok
+    options.add_argument("--window-size=1280,1024") # Ekran boyutu
     
-    # Kullanıcının verdiği ifadeyi Python'ın anlayacağı hale getiriyoruz
-    # Karekök için `sqrt()` ve üs almak için `pow(x, y)` desteklenir.
+    # Dockerfile'da kurulan chromedriver'ı kullan
+    # Genellikle /usr/bin/chromedriver konumunda olur ve PATH'e eklenir
+    service = ChromeService() 
     
-    adimlar = []
+    return webdriver.Chrome(service=service, options=options)
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gönderilen dökümanları işler."""
+    document = update.message.document
+    
+    # 1. Dosya uzantısını kontrol et
+    if not document.file_name or not document.file_name.lower().endswith(('.html', '.htm')):
+        await update.message.reply_text("Lütfen bir .html veya .htm dosyası gönderin.")
+        return
+
+    await update.message.reply_text("HTML dosyası alındı. İşleniyor, lütfen bekleyin...")
+    
+    temp_html_path = None
+    screenshot_path = None
+    driver = None
     
     try:
-        # Sonucu hesapla
-        result = eval(expression, safe_globals, safe_locals)
+        # 2. Dosyayı indir
+        file = await context.bot.get_file(document.file_id)
+        temp_html_path = f"temp_{document.file_id}.html"
+        await file.download_to_drive(temp_html_path)
         
-        # Adımları oluşturma (Manuel Açıklama)
-        adimlar.append(f"<b>1\\. Adım: İfadeyi Tanımlama</b>")
-        adimlar.append(f"İstenen hesaplama: <code>{expression}</code>")
-
-        if 'sqrt' in expression or 'pow' in expression:
-             adimlar.append(f"<b>2\\. Adım: Fonksiyonları Hesaplama</b>")
-             adimlar.append(f"Karekök (sqrt) veya Üs alma (pow) işlemleri, Python'ın <code>math</code> kütüphanesi ile gerçekleştirilir.")
-
-        adimlar.append(f"<b>3\\. Adım: Sonuçlandırma</b>")
-        adimlar.append(f"Tüm işlemler sırasıyla (çarpma, bölme, toplama, çıkarma) yapıldıktan sonra final sonuca ulaşılır\\.")
+        # 3. Selenium'u ayarla
+        driver = await setup_selenium_driver()
         
-        # Sonucu formatlama
-        final_result = f"<b>Final Sonuç:</b> {result}"
+        # 4. Yerel HTML dosyasını aç
+        full_file_path = "file://" + os.path.abspath(temp_html_path)
+        driver.get(full_file_path)
         
-        return "\n".join(adimlar), final_result
+        # 5. Ekran görüntüsü al
+        screenshot_path = f"screenshot_{document.file_id}.png"
+        driver.save_screenshot(screenshot_path)
         
-    except (NameError, TypeError, SyntaxError, ZeroDivisionError) as e:
-        return f"Hata", f"<b>İfade Hatası:</b> Lütfen ifadenizi kontrol edin. ({type(e).__name__}: {e})"
+        # Tarayıcıyı kapat
+        driver.quit()
+        
+        # 6. Ekran görüntüsünü kullanıcıya gönder
+        with open(screenshot_path, 'rb') as photo:
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=photo,
+                caption=f"'{document.file_name}' dosyasının render edilmiş hali."
+            )
+            
     except Exception as e:
-        return f"Hata", f"Beklenmedik bir hata oluştu: {e}"
-
-# --- Telegram İşleyicileri (Handlers) ---
-
-async def start(update, context):
-    """/start komutu işleyicisi."""
-    message = (
-        "Merhaba\\! Ben bir Hesap Makinesi Botuyum\\.\n"
-        "Bana bir matematiksel ifade yazın, size sonucu adım adım açıklayayım\\.\n\n"
-        "<b>Örnekler:</b>\n"
-        "<code>(15 \\* 4) \\+ sqrt(81)</code>\n"
-        "<code>pow(2, 5) \\- 10</code>"
-    )
-    await update.message.reply_text(message, parse_mode="HTML") 
-
-async def handle_message(update, context):
-    """Gelen tüm metin mesajlarını işler ve matematiksel olarak çözer."""
-    text = update.message.text
-    
-    if text is None:
-        return
+        logger.error(f"Hata oluştu: {e}", exc_info=True)
+        await update.message.reply_text(f"Üzgünüm, dosyayı işlerken bir hata oluştu: {e}")
         
-    # Komut Kontrolü: Komutsa yoksay
-    if text.startswith('/'):
-        return 
-
-    # Mesajı işlemek için bekleme mesajı gönder
-    initial_message = await update.message.reply_text("İşlem değerlendiriliyor...", parse_mode="HTML")
-    
-    # İfadeyi değerlendir
-    adimlar, sonuc = safe_evaluate_expression(text.strip())
-    
-    # Kullanıcıya tüm adımları ve sonucu gönder
-    full_response = adimlar + "\n\n" + sonuc
-    
-    # Mesajı güncelle
-    await initial_message.edit_text(full_response, 
-                                    parse_mode="HTML") 
-
-# --- Ana Fonksiyon ---
+    finally:
+        # 7. Geçici dosyaları temizle
+        if driver:
+            driver.quit()
+        if temp_html_path and os.path.exists(temp_html_path):
+            os.remove(temp_html_path)
+        if screenshot_path and os.path.exists(screenshot_path):
+            os.remove(screenshot_path)
 
 def main():
     """Botu başlatır."""
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    
-    # Filtresiz MessageHandler: Tüm metin mesajlarını handle_message'a gönderir
-    application.add_handler(MessageHandler(None, handle_message)) 
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    logger.info("Bot Polling ile Başlatılıyor...")
+    print("Bot çalışıyor...")
     application.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
