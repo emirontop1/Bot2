@@ -1,57 +1,58 @@
 import telegram
-# Filters artık kullanılmıyor
 from telegram.ext import Application, CommandHandler, MessageHandler 
-from telegram import ParseMode
 import logging
 import os
-import re # Komut kontrolü için re eklendi
+import re 
 
-# Web Scraping için: pytube
+# Web Scraping için: pytube (Bağımlılıklarda olduğundan emin olun)
 from pytube import YouTube
 from pytube.exceptions import VideoUnavailable, RegexMatchError
 
-# Günlüklemeyi (logging) ayarlayın
+# Günlüklemeyi ayarlayın
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
-# Telegram Bot Token'ınız ortam değişkeninden alın.
+# Telegram Bot Token
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU')
 
-# Sayıları okunabilir formatta biçimlendirme
+# --- Yardımcı Fonksiyonlar ---
+
 def format_number(num):
-    """Sayıları binlik ayraçla (örnek: 1.234.567) biçimlendirir."""
+    """Sayıları okunabilir formatta biçimlendirir."""
     try:
         return f"{num:,}".replace(',', 'X').replace('.', ',').replace('X', '.')
     except (ValueError, TypeError):
         return str(num)
 
-# Asenkron (Async) olarak çalışan istatistik çekme fonksiyonu
+def escape_html(text):
+    """HTML formatı için gerekli temel karakterleri kaçırır."""
+    # HTML için sadece &, <, > karakterleri kaçırılmalıdır.
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    
+# --- Ana İşlevsellik ---
+
 async def get_youtube_stats_scraper(url):
-    """pytube kullanarak video ve kanal istatistiklerini çeker (API gerektirmez)."""
-    # ... (pytube ile istatistik çekme mantığı aynı kalır)
+    """pytube kullanarak istatistikleri çeker."""
     try:
         yt = YouTube(url)
 
-        video_title = yt.title
-        channel_title = yt.author
+        # HTML formatı için kaçırılmış başlık ve kanal adı
+        video_title = escape_html(yt.title)
+        channel_title = escape_html(yt.author)
         view_count_f = format_number(yt.views)
         
         like_count_f = "Gizli/Çekilemiyor" 
-        try:
-            if yt.rating is not None:
-                like_count_f = "Scraping ile belirsiz" 
-        except Exception:
-            pass 
-
+        
+        # HTML formatında mesaj (<b> bold, <i> italic, <a> link)
         message = (
-            f"🎬 **Video İstatistikleri (API'siz)**\n"
-            f"🔗 [**{video_title}**]({url})\n\n"
-            f"👤 **Kanal Adı:** {channel_title}\n"
-            f"👀 **Görüntüleme:** {view_count_f}\n"
-            f"👍 **Beğeni:** {like_count_f}\n"
-            f"⭐ **Abone Sayısı:** Bilinmiyor (API/Detaylı Scraping gerektirir)"
+            f"🎬 <b>Video İstatistikleri (API'siz)</b>\n"
+            f'🔗 <a href="{url}">{video_title}</a>\n\n'
+            f"👤 <b>Kanal Adı:</b> {channel_title}\n"
+            f"👀 <b>Görüntüleme:</b> {view_count_f}\n"
+            f"👍 <b>Beğeni:</b> {like_count_f}\n"
+            f"⭐ <b>Abone Sayısı:</b> Bilinmiyor (Scraping kısıtlaması)"
         )
 
         return message
@@ -64,61 +65,52 @@ async def get_youtube_stats_scraper(url):
         logger.error(f"Scraping hatası: {e}")
         return "İstatistikler çekilirken beklenmedik bir hata oluştu."
 
-# /start komutu işleyicisi
+
+# --- Telegram İşleyicileri (Handlers) ---
+
 async def start(update, context):
-    """Bot başlatıldığında gönderilen mesaj."""
+    """/start komutu işleyicisi."""
     await update.message.reply_text(
-        'Merhaba! Bana bir YouTube video linki gönderin, size istatistiklerini göstereyim. '
-        'Bu bot API kullanmaz.',
-        parse_mode=ParseMode.MARKDOWN
+        'Merhaba! Bana bir YouTube video linki gönderin, size istatistiklerini göstereyim.',
+        parse_mode="HTML" # HTML parse modu kullanılıyor
     )
 
-# Gelen mesajları işleme (YouTube linki bekleniyor)
 async def handle_message(update, context):
-    """Gelen mesajı kontrol eder ve YouTube linki ise istatistikleri çeker."""
+    """Gelen tüm mesajları işler."""
     text = update.message.text
     
     if text is None:
-        # Metin mesajı değilse (örneğin resim, sticker) işlem yapma
         return
         
-    # **KOMUT KONTROLÜ (FİLTRE YERİNE BU KULLANILDI)**
+    # KOMUT KONTROLÜ
     if text.startswith('/'):
-        # Mesaj bir komutla başlıyorsa (örneğin /help), yoksay.
         return 
-    # **KOMUT KONTROLÜ SONU**
 
     # Basit URL kontrolü
     if 'youtube.com' in text or 'youtu.be' in text:
-        # Önce kullanıcıya bekleme mesajı gönder
-        initial_message = await update.message.reply_text("İstatistikler çekiliyor...")
+        initial_message = await update.message.reply_text("İstatistikler çekiliyor...", parse_mode="HTML")
         
-        # İstatistikleri çek ve mesajı düzenle
         stats_message = await get_youtube_stats_scraper(text)
         
-        # Gönderilen ilk mesajı istatistiklerle güncelle
+        # Mesajı güncelle ve HTML kullan
         await initial_message.edit_text(stats_message, 
-                                        parse_mode=ParseMode.MARKDOWN,
+                                        parse_mode="HTML",
                                         disable_web_page_preview=True) 
     else:
-        # Komut değil, link de değilse kullanıcıya geri bildirim ver
-        await update.message.reply_text('Lütfen geçerli bir YouTube video linki gönderin.')
+        await update.message.reply_text('Lütfen geçerli bir YouTube video linki gönderin.', parse_mode="HTML")
 
-# Ana fonksiyon
+# --- Ana Fonksiyon ---
+
 def main():
     """Botu başlatır."""
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Komut işleyicileri
     application.add_handler(CommandHandler("start", start))
-
-    # Mesaj işleyicisi (Gelen *tüm* metin mesajlarına tepki verir)
-    # Filtre kullanmadığımız için filters.TEXT kullanmaya da gerek yok.
+    
+    # Filtresiz MessageHandler
     application.add_handler(MessageHandler(None, handle_message)) 
 
     logger.info("Bot Polling ile Başlatılıyor...")
-    
-    # Botu başlatma (Polling modu)
     application.run_polling()
 
 if __name__ == '__main__':
