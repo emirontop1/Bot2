@@ -3,131 +3,110 @@ from telegram.ext import Application, CommandHandler, MessageHandler
 import logging
 import os
 import re 
+import math # Matematik fonksiyonları için
 
-# Scraping için yeni kütüphaneler
-import requests
-from bs4 import BeautifulSoup
-import json # Sayfadaki JSON verisini çekmek için
-
-# ... (Diğer importlar ve logging aynı kalır)
+# Günlüklemeyi ayarlayın
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
+# Telegram Bot Token
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8280902341:AAEQvYIlhpBfcI8X6KviiWkzIck-leeoqHU')
 
-# ... (format_number ve escape_html fonksiyonları aynı kalır)
-def format_number(num):
-    """Sayıları okunabilir formatta biçimlendirir."""
+# --- Yardımcı Fonksiyonlar ---
+
+def safe_evaluate_expression(expression):
+    """
+    Kullanıcı tarafından verilen ifadeyi güvenli bir şekilde değerlendirir
+    ve sonucu adım adım açıklar.
+    """
+    # İfadede izin verilen karakterler: sayılar, +, -, *, /, (, ), ., ve math fonksiyonları
+    # Bu, komut enjeksiyonunu önlemek için hayati öneme sahiptir.
+    allowed_chars = r'[0-9\.\+\-\*/\(\)\s]|sqrt|pow|sin|cos|tan|log'
+    if not re.fullmatch(allowed_chars, expression.replace(' ', '')):
+        return "Geçersiz ifade.", "Lütfen sadece sayıları ve temel işlemleri (\\+, \\-, \\*, \\/) kullanın. Fonksiyonlar: sqrt(), pow(x, y)."
+
+    # math kütüphanesindeki fonksiyonları kullanıma açan güvenli kapsam
+    safe_globals = {"__builtins__": None}
+    safe_locals = {"sqrt": math.sqrt, "pow": math.pow, "sin": math.sin, "cos": math.cos, "tan": math.tan, "log": math.log}
+    
+    # Kullanıcının verdiği ifadeyi Python'ın anlayacağı hale getiriyoruz
+    # Karekök için `sqrt()` ve üs almak için `pow(x, y)` desteklenir.
+    
+    adimlar = []
+    
     try:
-        return f"{num:,}".replace(',', 'X').replace('.', ',').replace('X', '.')
-    except (ValueError, TypeError):
-        return str(num)
-
-def escape_html(text):
-    """HTML formatı için gerekli temel karakterleri kaçırır."""
-    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    
-
-# --- Ana İşlevsellik: YENİ SCRAPER ---
-
-async def get_youtube_stats_scraper(url):
-    """requests ve BeautifulSoup kullanarak istatistikleri çeker."""
-    
-    # YouTube, botları engellediği için, web tarayıcısı gibi görünmek önemlidir.
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
-    try:
-        # 1. Sayfa içeriğini çekme
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status() # HTTP hatası varsa istisna fırlat
-
-        # 2. Görüntüleme sayısı ve başlığı HTML'den alma
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # Sonucu hesapla
+        result = eval(expression, safe_globals, safe_locals)
         
-        # Youtube verilerinin tutulduğu ana JSON bloğunu arama
-        data = None
-        for script in soup.find_all('script'):
-            if 'ytInitialPlayerResponse' in script.text:
-                # JSON verisi bir JavaScript değişkeni içinde gömülü
-                json_str = script.text.split('var ytInitialPlayerResponse = ')[-1].split(';var meta = document')[0]
-                data = json.loads(json_str)
-                break
+        # Adımları oluşturma (Manuel Açıklama)
+        adimlar.append(f"<b>1\\. Adım: İfadeyi Tanımlama</b>")
+        adimlar.append(f"İstenen hesaplama: <code>{expression}</code>")
 
-        if not data:
-            return "Veri çekilirken kritik hata: Sayfa yapısı değişmiş olabilir."
+        if 'sqrt' in expression or 'pow' in expression:
+             adimlar.append(f"<b>2\\. Adım: Fonksiyonları Hesaplama</b>")
+             adimlar.append(f"Karekök (sqrt) veya Üs alma (pow) işlemleri, Python'ın <code>math</code> kütüphanesi ile gerçekleştirilir.")
 
-        # İstatistikleri JSON bloğundan çekme
-        video_details = data.get('videoDetails', {})
+        adimlar.append(f"<b>3\\. Adım: Sonuçlandırma</b>")
+        adimlar.append(f"Tüm işlemler sırasıyla (çarpma, bölme, toplama, çıkarma) yapıldıktan sonra final sonuca ulaşılır\\.")
         
-        video_title = escape_html(video_details.get('title', 'Başlık Bulunamadı'))
-        channel_title = escape_html(video_details.get('author', 'Kanal Bulunamadı'))
+        # Sonucu formatlama
+        final_result = f"<b>Final Sonuç:</b> {result}"
         
-        view_count = video_details.get('viewCount', 0)
-        view_count_f = format_number(int(view_count)) if view_count else "Bilinmiyor"
+        return "\n".join(adimlar), final_result
         
-        # Beğenileri çekmek bu yöntemle çok zor olduğu için sabit bırakılır
-        like_count_f = "Gizli/Çekilemiyor"
-
-        # HTML formatında mesaj
-        message = (
-            f"🎬 <b>Video İstatistikleri (Scraping)</b>\n"
-            f'🔗 <a href="{url}">{video_title}</a>\n\n'
-            f"👤 <b>Kanal Adı:</b> {channel_title}\n"
-            f"👀 <b>Görüntüleme:</b> {view_count_f}\n"
-            f"👍 <b>Beğeni:</b> {like_count_f}\n"
-            f"⭐ <b>Abone Sayısı:</b> Bilinmiyor (Scraping kısıtlaması)"
-        )
-
-        return message
-
-    except requests.exceptions.HTTPError as e:
-        return f"HTTP Hatası: {e.response.status_code}. Erişim engellenmiş olabilir."
-    except requests.exceptions.RequestException:
-        return "Bağlantı hatası veya zaman aşımı."
+    except (NameError, TypeError, SyntaxError, ZeroDivisionError) as e:
+        return f"Hata", f"<b>İfade Hatası:</b> Lütfen ifadenizi kontrol edin. ({type(e).__name__}: {e})"
     except Exception as e:
-        logger.error(f"Genel Scraping Hatası: {e}")
-        return "İstatistikler çekilirken beklenmedik bir hata oluştu. (Genel Hata)"
+        return f"Hata", f"Beklenmedik bir hata oluştu: {e}"
 
 # --- Telegram İşleyicileri (Handlers) ---
 
-# ... (start ve handle_message fonksiyonları ile main fonksiyonu aynı kalır, 
-# çünkü onlar artık doğru çalışıyor ve sadece parse_mode="HTML" kullanıyor.)
-
 async def start(update, context):
     """/start komutu işleyicisi."""
-    await update.message.reply_text(
-        'Merhaba! Bana bir YouTube video linki gönderin, size istatistiklerini göstereyim.',
-        parse_mode="HTML" 
+    message = (
+        "Merhaba\\! Ben bir Hesap Makinesi Botuyum\\.\n"
+        "Bana bir matematiksel ifade yazın, size sonucu adım adım açıklayayım\\.\n\n"
+        "<b>Örnekler:</b>\n"
+        "<code>(15 \\* 4) \\+ sqrt(81)</code>\n"
+        "<code>pow(2, 5) \\- 10</code>"
     )
+    await update.message.reply_text(message, parse_mode="HTML") 
 
 async def handle_message(update, context):
-    """Gelen tüm mesajları işler."""
+    """Gelen tüm metin mesajlarını işler ve matematiksel olarak çözer."""
     text = update.message.text
     
     if text is None:
         return
         
+    # Komut Kontrolü: Komutsa yoksay
     if text.startswith('/'):
         return 
 
-    if 'youtube.com' in text or 'youtu.be' in text:
-        initial_message = await update.message.reply_text("İstatistikler çekiliyor...", parse_mode="HTML")
-        
-        stats_message = await get_youtube_stats_scraper(text)
-        
-        await initial_message.edit_text(stats_message, 
-                                        parse_mode="HTML",
-                                        disable_web_page_preview=True) 
-    else:
-        await update.message.reply_text('Lütfen geçerli bir YouTube video linki gönderin.', parse_mode="HTML")
+    # Mesajı işlemek için bekleme mesajı gönder
+    initial_message = await update.message.reply_text("İşlem değerlendiriliyor...", parse_mode="HTML")
+    
+    # İfadeyi değerlendir
+    adimlar, sonuc = safe_evaluate_expression(text.strip())
+    
+    # Kullanıcıya tüm adımları ve sonucu gönder
+    full_response = adimlar + "\n\n" + sonuc
+    
+    # Mesajı güncelle
+    await initial_message.edit_text(full_response, 
+                                    parse_mode="HTML") 
+
+# --- Ana Fonksiyon ---
 
 def main():
     """Botu başlatır."""
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
+    
+    # Filtresiz MessageHandler: Tüm metin mesajlarını handle_message'a gönderir
     application.add_handler(MessageHandler(None, handle_message)) 
 
     logger.info("Bot Polling ile Başlatılıyor...")
