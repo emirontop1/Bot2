@@ -1,4 +1,4 @@
--- main.lua
+-- main.lu
 local ok_socket, socket = pcall(require, "socket")
 local ok_ltn12, ltn12 = pcall(require, "ltn12")
 local ok_dkjson, json = pcall(require, "dkjson")
