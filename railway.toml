@@ -3,5 +3,4 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Railpack ile start komutunu deploy altında belirt
-start = "lua main.lua"
+start = "lua5.4 main.lua"
