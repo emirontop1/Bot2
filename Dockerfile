@@ -1,23 +1,21 @@
-# Kullanımı kolay, stabil bir temel: Debian
+# Dockerfile - Lua 5.4 + luarocks + gerekli rocks
 FROM debian:bookworm-slim
 
-# Sistem araçları + lua + luarocks
+ENV DEBIAN_FRONTEND=noninteractive
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    lua5.4 \
-    luarocks \
-    curl \
-    ca-certificates \
+    wget build-essential unzip ca-certificates curl git \
+    lua5.4 lua5.4-dev luarocks \
     && rm -rf /var/lib/apt/lists/*
 
-# Gerekli Lua rock'larını yüklüyoruz (socket + dkjson örneği)
+# Ensure luarocks uses lua5.4 (debian's luarocks usually already configured)
 RUN luarocks install luasocket || true
 RUN luarocks install dkjson || true
 
-# Uygulamayı kopyala
 WORKDIR /app
 COPY . /app
 
 EXPOSE 8080
 
-# Varsayılan komut: main.lua çalıştır
-CMD ["lua", "main.lua"]
+# Use lua5.4 explicitly so we don't depend on 'lua' symlink
+CMD ["lua5.4", "main.lua"]
